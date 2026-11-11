@@ -3,17 +3,18 @@
 
 Writes a dark and a light variant so the README can pick one per theme with a
 <picture> element. No image library, no fonts: every mark comes from the art's
-own characters.
+own characters. The art sits at roughly two thirds of the canvas width so the
+dragon has room to breathe inside a wide banner.
 """
 
 import os
 
 from ascii_render import Canvas, draw_cells, load_rows, rounded_rect_alpha
 
-CELL_WIDTH = 9
-CELL_HEIGHT = 16
-PADDING = 48
-RADIUS = 26
+CANVAS = (1280, 520)
+ART_WIDTH = 0.66
+RADIUS = 24
+CELL_ASPECT = 0.56
 
 # (fill, glyph, glyph alpha). `#` is the dark field, ` ` the lit subject.
 # The fill sits far below the glyph so the characters still read as text.
@@ -32,21 +33,41 @@ LIGHT = {
 }
 
 
-def render(rows, tones, panel, destination):
-    width = len(rows[0]) * CELL_WIDTH + PADDING * 2
-    height = len(rows) * CELL_HEIGHT + PADDING * 2
-    canvas = Canvas(width, height, (0.0, 0.0, 0.0, 0.0))
+def layout(rows):
+    width, height = CANVAS
+    columns, lines = len(rows[0]), len(rows)
+    cell_w = ART_WIDTH * width / columns
+    cell_h = cell_w / CELL_ASPECT
+    if lines * cell_h > height * 0.8:
+        cell_h = height * 0.8 / lines
+        cell_w = cell_h * CELL_ASPECT
+    origin_x = (width - columns * cell_w) / 2
+    origin_y = (height - lines * cell_h) / 2
+    return cell_w, cell_h, origin_x, origin_y
 
-    inset = PADDING * 0.4
+
+def field_tones(base, panel, delta):
+    """Make the art's dark field melt into the panel instead of boxing it."""
+
+    tones = dict(base)
+    tones["#"] = (panel, tuple(min(1.0, max(0.0, c + delta)) for c in panel), 0.6)
+    return tones
+
+
+def render(rows, base, panel, destination):
+    width, height = CANVAS
+    canvas = Canvas(width, height, (0.0, 0.0, 0.0, 0.0))
     for y in range(height):
         for x in range(width):
-            alpha = rounded_rect_alpha(x, y, inset, inset, width - inset, height - inset, RADIUS)
+            alpha = rounded_rect_alpha(x, y, 0.0, 0.0, width - 1, height - 1, RADIUS)
             if alpha > 0:
                 canvas.blend(x, y, panel, alpha)
 
-    draw_cells(canvas, rows, PADDING, PADDING, CELL_WIDTH, CELL_HEIGHT, tones)
+    cell_w, cell_h, origin_x, origin_y = layout(rows)
+    delta = 0.05 if sum(panel) < 1.5 else -0.05
+    draw_cells(canvas, rows, origin_x, origin_y, cell_w, cell_h, field_tones(base, panel, delta))
     canvas.write_png(destination)
-    print("wrote", destination, f"{width}x{height}")
+    print("wrote", destination, f"{width}x{height}", f"art {len(rows[0]) * cell_w:.0f}px wide")
 
 
 def main():

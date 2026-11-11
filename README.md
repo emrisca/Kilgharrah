@@ -1,7 +1,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.png">
-  <img alt="The Kilgharrah dragon, drawn in ASCII art" src="assets/banner-light.png" width="996">
+  <img alt="The Kilgharrah dragon, drawn in ASCII art" src="assets/banner-light.png" width="1280">
 </picture>
 
 # Kilgharrah
@@ -75,6 +75,6 @@ kilgharrah/
   assets/                README banner, dark and light
   ascii-art.txt          Source art for the icon and the banner
   scripts/ascii_render.py Glyph and tile renderer used by both scripts
-  scripts/make-icon.py   Renders the PNG, icns and ico set
+  scripts/make-icon.py   Renders the PNG, icns, ico set and the in-app mark
   scripts/make-banner.py Renders the README banner in both themes
 ```

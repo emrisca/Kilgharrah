@@ -11,12 +11,6 @@ const base = {
 };
 
 export const Icon = {
-  Kilgharrah: (
-    <svg width={18} height={18} viewBox="0 0 18 18" aria-hidden="true">
-      <rect width="18" height="18" rx="5" fill="var(--accent)" />
-      <path d="M5.8 4.6v9M5.8 9.6 12.2 4.6M7.8 8 12.6 13.4" stroke="var(--accent-ink)" strokeWidth="1.7" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  ),
   Search: (
     <svg {...base}>
       <circle cx="7" cy="7" r="4.2" />

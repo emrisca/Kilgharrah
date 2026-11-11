@@ -96,9 +96,58 @@ def build_master(path):
     canvas.write_png(path)
 
 
+def build_mark(light, path):
+    """A small solid-silhouette mark for the app's top bar.
+
+    The mosaic is dropped here: at 20 CSS px the gaps and glyphs turn to noise,
+    so the dragon is a single tone on a tile that matches the theme.
+    """
+
+    size = 128
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rows = load_rows(os.path.join(root, "ascii-art.txt"))
+    grid = [row[CROP_COLS[0]:CROP_COLS[1]] for row in rows[CROP_ROWS[0]:CROP_ROWS[1]]]
+    columns, lines = len(grid[0]), len(grid)
+
+    cell_w = 0.86 * size / columns
+    cell_h = cell_w / CELL_ASPECT
+    if lines * cell_h > 0.86 * size:
+        cell_h = 0.86 * size / lines
+        cell_w = cell_h * CELL_ASPECT
+    origin_x = (size - columns * cell_w) / 2
+    origin_y = (size - lines * cell_h) / 2
+
+    tile = (0.945, 0.952, 0.963) if light else (0.063, 0.079, 0.102)
+    ink = (0.055, 0.475, 0.290) if light else (0.240, 0.860, 0.520)
+    radius = 0.235 * size
+
+    canvas = Canvas(size, size, (0.0, 0.0, 0.0, 0.0))
+    for y in range(size):
+        for x in range(size):
+            alpha = rounded_rect_alpha(x, y, 0.5, 0.5, size - 0.5, size - 0.5, radius)
+            if alpha > 0.0:
+                canvas.blend(x, y, tile, alpha)
+
+    for line_index, line in enumerate(grid):
+        for column_index, char in enumerate(line):
+            if char == "#":
+                continue
+            left = origin_x + column_index * cell_w
+            top = origin_y + line_index * cell_h
+            for y in range(int(top), int(top + cell_h + 1)):
+                for x in range(int(left), int(left + cell_w + 1)):
+                    canvas.blend(x, y, ink, 1.0)
+
+    canvas.write_png(path)
+
+
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     icons = os.path.join(root, "src-tauri", "icons")
+    marks = os.path.join(root, "src", "assets")
+    os.makedirs(marks, exist_ok=True)
+    build_mark(False, os.path.join(marks, "mark-dark.png"))
+    build_mark(True, os.path.join(marks, "mark-light.png"))
     os.makedirs(icons, exist_ok=True)
     master = os.path.join(icons, "icon.png")
     build_master(master)

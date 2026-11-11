@@ -55,7 +55,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">{Icon.Kilgharrah}</span>
+          <span className="brand-mark" aria-hidden="true" />
           <span className="brand-name">Kilgharrah</span>
         </div>
 

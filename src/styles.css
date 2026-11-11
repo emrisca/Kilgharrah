@@ -131,7 +131,14 @@ button:disabled {
 }
 
 .brand-mark {
-  display: flex;
+  display: block;
+  width: 20px;
+  height: 20px;
+  background: url("./assets/mark-dark.png") center / contain no-repeat;
+}
+
+[data-theme="light"] .brand-mark {
+  background-image: url("./assets/mark-light.png");
 }
 
 .tabs {
