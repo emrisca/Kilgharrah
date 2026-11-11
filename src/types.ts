@@ -3,9 +3,14 @@ export type Category = {
   name: string;
   blurb: string;
   count: number;
+  source: "store" | "hermes";
 };
 
+export type SkillSource = "store" | "hermes";
+
 export type Skill = {
+  id: string;
+  source: SkillSource;
   slug: string;
   name: string;
   description: string;
@@ -14,6 +19,11 @@ export type Skill = {
   enabled: boolean;
   files: number;
   updatedAt: number;
+};
+
+export type SkillFile = {
+  path: string;
+  bytes: number;
 };
 
 export type McpServer = {
@@ -27,6 +37,7 @@ export type McpServer = {
 export type AppState = {
   store: string;
   skillsRoot: string;
+  hermesRoot: string;
   mcpPath: string;
   categories: Category[];
   skills: Skill[];
@@ -42,6 +53,8 @@ export type CatalogItem = {
   summary: string;
   version: string;
   downloads: number;
+  category: string;
+  topics: string[];
   installable: boolean;
   command: string | null;
 };

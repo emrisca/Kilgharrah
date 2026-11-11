@@ -95,5 +95,35 @@ export const Icon = {
       <path d="M11.6 9.6v2.6c0 .6-.4 1-1 1H3.8c-.6 0-1-.4-1-1V5.4c0-.6.4-1 1-1h2.6" />
     </svg>
   ),
-  Spinner: <span className="spinner" aria-hidden="true" />
+  Spinner: <span className="spinner" aria-hidden="true" />,
+  Settings: (
+    <svg {...base}>
+      <path d="M2.5 4.5h11M2.5 11.5h11" />
+      <circle cx="6" cy="4.5" r="1.6" />
+      <circle cx="10.5" cy="11.5" r="1.6" />
+    </svg>
+  ),
+  Edit: (
+    <svg {...base}>
+      <path d="M10.6 2.6a1.6 1.6 0 0 1 2.3 2.3L5.4 12.4l-3 .7.7-3 7.5-7.5Z" />
+    </svg>
+  ),
+  Eye: (
+    <svg {...base}>
+      <path d="M1.6 8S3.8 4 8 4s6.4 4 6.4 4S12.2 12 8 12 1.6 8 1.6 8Z" />
+      <circle cx="8" cy="8" r="1.8" />
+    </svg>
+  ),
+  File: (
+    <svg {...base} width={12} height={12} viewBox="0 0 16 16">
+      <path d="M4 2.4h4.6L12 5.8v7.8H4V2.4Z" />
+      <path d="M8.4 2.6v3.2h3.2" />
+    </svg>
+  ),
+  Import: (
+    <svg {...base}>
+      <path d="M8 2.4v7.2M5.2 6.8 8 9.6l2.8-2.8" />
+      <path d="M3 11.2v1.2c0 .6.4 1 1 1h8c.6 0 1-.4 1-1v-1.2" />
+    </svg>
+  )
 };

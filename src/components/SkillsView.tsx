@@ -1,10 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { AppState, CatalogItem, Skill } from "../types";
+import type { AppState, CatalogItem, Skill, SkillFile } from "../types";
 import { Icon } from "./Icons";
+import { Markdown } from "./Markdown";
 import { Sheet } from "./Sheet";
 
-type Scope = "all" | "installed" | "market";
+type Scope = "all" | "store" | "hermes" | "market";
+
+const MARKET_CATEGORIES: { id: string; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "design", label: "Design" },
+  { id: "development", label: "Development" },
+  { id: "writing", label: "Writing" },
+  { id: "research", label: "Research" },
+  { id: "data", label: "Data" },
+  { id: "productivity", label: "Productivity" },
+  { id: "media", label: "Media" },
+  { id: "marketing", label: "Marketing" },
+  { id: "automation", label: "Automation" },
+  { id: "security", label: "Security" },
+  { id: "ai", label: "AI and agents" },
+  { id: "other", label: "Other" }
+];
 
 type Props = {
   state: AppState;
@@ -18,6 +35,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [market, setMarket] = useState<CatalogItem[]>([]);
+  const [marketCategory, setMarketCategory] = useState("all");
   const [marketLoading, setMarketLoading] = useState(true);
   const [nonce, setNonce] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
@@ -41,7 +59,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   }, []);
 
   useEffect(() => {
-    if (scope === "installed") return;
+    if (scope === "store" || scope === "hermes") return;
     const trimmed = query.trim();
     if (trimmed.length === 1) return;
     let alive = true;
@@ -49,7 +67,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
       async () => {
         setMarketLoading(true);
         try {
-          const items = await api.searchMarket(trimmed, 24);
+          const items = await api.searchMarket(trimmed, trimmed ? 60 : 200);
           if (alive) setMarket(items);
         } catch (reason) {
           onError(String(reason));
@@ -65,23 +83,49 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
     };
   }, [query, scope, nonce]);
 
+  const storeSkills = state.skills.filter((skill) => skill.source === "store");
+  const hermesCount = state.skills.length - storeSkills.length;
+  const categoryOptions = state.categories.filter((entry) =>
+    scope === "store" ? entry.source === "store" : scope === "hermes" ? entry.source === "hermes" : true
+  );
+
+  useEffect(() => {
+    setCategory("all");
+  }, [scope]);
+
   const skills = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return state.skills.filter((skill) => {
+      if (scope === "store" && skill.source !== "store") return false;
+      if (scope === "hermes" && skill.source !== "hermes") return false;
       if (category !== "all" && skill.category !== category) return false;
       if (!needle) return true;
       return `${skill.name} ${skill.slug} ${skill.description}`.toLowerCase().includes(needle);
     });
-  }, [state.skills, query, category]);
+  }, [state.skills, query, category, scope]);
 
   const groups = state.categories
     .map((entry) => ({ entry, skills: skills.filter((skill) => skill.category === entry.id) }))
     .filter((group) => group.skills.length > 0);
 
-  const installedSlugs = new Set(state.skills.map((skill) => skill.slug));
-  const visibleMarket = scope === "installed" ? [] : market;
+  const installedSlugs = new Set(storeSkills.map((skill) => skill.slug));
+
+  const marketCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const item of market) {
+      counts[item.category] = (counts[item.category] ?? 0) + 1;
+    }
+    return counts;
+  }, [market]);
+
+  const visibleMarket =
+    scope === "store" || scope === "hermes"
+      ? []
+      : market.filter((item) => marketCategory === "all" || item.category === marketCategory);
   const showInstalled = scope !== "market";
-  const showMarket = scope !== "installed";
+  const showMarket = scope === "all" || scope === "market";
+  const marketLabel =
+    MARKET_CATEGORIES.find((entry) => entry.id === marketCategory)?.label ?? marketCategory;
 
   const toggle = async (skill: Skill) => {
     try {
@@ -94,7 +138,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   const install = async (item: CatalogItem, target?: string) => {
     setBusy(item.id);
     try {
-      const next = await api.installMarket(item.slug, target ?? null);
+      const next = await api.installMarket(item.slug, item.owner, target ?? null);
       onState(next);
       setSelectedItem(null);
       notify(`${item.name} installed and enabled`);
@@ -121,7 +165,9 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   };
 
   const eyebrow = selected
-    ? `${state.categories.find((entry) => entry.id === selected.category)?.name ?? selected.category} · local`
+    ? `${state.categories.find((entry) => entry.id === selected.category)?.name ?? selected.category} · ${
+        selected.source === "hermes" ? "Hermes" : "local"
+      }`
     : selectedItem
       ? `ClawHub · ${selectedItem.kind}`
       : "";
@@ -132,14 +178,12 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
       <div className="searchrow">
         <div className="searchbar">
           <span className="search-icon">{Icon.Search}</span>
-          <span className="scope-chip">
-            Skills {Icon.ChevronDown}
-          </span>
+          <span className="scope-chip">Skills {Icon.ChevronDown}</span>
           <input
             ref={searchRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search installed skills and the ClawHub registry"
+            placeholder="Search the store, Hermes and the ClawHub registry"
             spellCheck={false}
             aria-label="Search skills"
           />
@@ -164,40 +208,49 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
           aria-label="Filter by category"
         >
           <option value="all">All categories</option>
-          {state.categories.map((entry) => (
+          {categoryOptions.map((entry) => (
             <option key={entry.id} value={entry.id}>
-              {entry.name}
+              {entry.name} ({entry.count})
             </option>
           ))}
         </select>
 
         <div className="segmented" role="group" aria-label="Source">
-          {(["all", "installed", "market"] as Scope[]).map((value) => (
+          {(["all", "store", "hermes", "market"] as Scope[]).map((value) => (
             <button key={value} data-active={scope === value} onClick={() => setScope(value)}>
-              {value === "all" ? "All" : value === "market" ? "ClawHub" : "Installed"}
+              {value === "all"
+                ? "All"
+                : value === "market"
+                  ? "ClawHub"
+                  : value === "store"
+                    ? "Store"
+                    : "Hermes"}
             </button>
           ))}
         </div>
 
         <span className="filter-note">
-          {state.skills.filter((skill) => skill.enabled).length} enabled of {state.skills.length}
+          {storeSkills.filter((skill) => skill.enabled).length} enabled of {storeSkills.length} in the
+          store · {hermesCount} in Hermes
         </span>
         <span className="spacer" />
-        <button
-          className="ghost-btn"
-          onClick={() => setNonce((value) => value + 1)}
-          title="Refresh ClawHub"
-        >
-          {Icon.Refresh}
-        </button>
+        {showMarket && (
+          <button
+            className="ghost-btn"
+            onClick={() => setNonce((value) => value + 1)}
+            title="Refresh ClawHub"
+          >
+            {Icon.Refresh}
+          </button>
+        )}
       </div>
 
       {showInstalled && groups.length === 0 && (
         <div className="empty">
-          <h3>No skills here yet</h3>
+          <h3>Nothing matches</h3>
           <p>
             {query
-              ? `Nothing installed matches “${query}”.`
+              ? `No installed skill matches "${query.trim()}".`
               : "Create one, or install from the ClawHub shelf below."}
           </p>
           <button className="primary" onClick={() => setCompose(true)}>
@@ -218,7 +271,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
               {items.map((skill) => (
                 <article
                   className="card"
-                  key={skill.path}
+                  key={skill.id}
                   onClick={() => setSelected(skill)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -231,19 +284,22 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                 >
                   <div className="card-top">
                     <span className="eyebrow">
-                      {entry.name} · {skill.enabled ? "on" : "off"}
+                      {entry.name} ·{" "}
+                      {skill.source === "hermes" ? "Hermes" : skill.enabled ? "on" : "off"}
                     </span>
-                    <button
-                      className="icon-btn small"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void toggle(skill);
-                      }}
-                      aria-label={skill.enabled ? `Disable ${skill.name}` : `Enable ${skill.name}`}
-                      title={skill.enabled ? "Disable" : "Enable"}
-                    >
-                      {skill.enabled ? Icon.Check : Icon.Plus}
-                    </button>
+                    {skill.source === "store" && (
+                      <button
+                        className="icon-btn small"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void toggle(skill);
+                        }}
+                        aria-label={skill.enabled ? `Disable ${skill.name}` : `Enable ${skill.name}`}
+                        title={skill.enabled ? "Disable" : "Enable"}
+                      >
+                        {skill.enabled ? Icon.Check : Icon.Plus}
+                      </button>
+                    )}
                   </div>
                   <h3>{skill.name}</h3>
                   <p>{skill.description || "No description yet."}</p>
@@ -253,15 +309,23 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                     </span>
                     <span className="chip ghost">{relativeTime(skill.updatedAt)}</span>
                     <span className="spacer" />
-                    <span className="switch" data-on={skill.enabled} onClick={(event) => event.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={skill.enabled}
-                        onChange={() => void toggle(skill)}
-                        aria-label={`${skill.name} enabled`}
-                      />
-                      <span />
-                    </span>
+                    {skill.source === "store" ? (
+                      <span
+                        className="switch"
+                        data-on={skill.enabled}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={skill.enabled}
+                          onChange={() => void toggle(skill)}
+                          aria-label={`${skill.name} enabled`}
+                        />
+                        <span />
+                      </span>
+                    ) : (
+                      <span className="chip">Read-only</span>
+                    )}
                   </div>
                 </article>
               ))}
@@ -275,13 +339,35 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
             <h2>ClawHub</h2>
             <p>
               {query.trim()
-                ? `Skills and plugins matching “${query.trim()}”`
-                : "Most downloaded skills, ready to install"}
+                ? `Skills and plugins matching "${query.trim()}"`
+                : marketCategory === "all"
+                  ? "Most downloaded skills, ready to install"
+                  : `Top skills filed under ${marketLabel}`}
             </p>
             <span className="count">{visibleMarket.length}</span>
           </header>
 
-          {marketLoading && visibleMarket.length === 0 ? (
+          <div className="chips-row" role="tablist" aria-label="ClawHub category">
+            {MARKET_CATEGORIES.filter(
+              (entry) => entry.id === "all" || (marketCounts[entry.id] ?? 0) > 0
+            ).map((entry) => (
+              <button
+                key={entry.id}
+                role="tab"
+                aria-selected={marketCategory === entry.id}
+                className="pill"
+                data-active={marketCategory === entry.id}
+                onClick={() => setMarketCategory(entry.id)}
+              >
+                {entry.label}
+                <span className="pill-count">
+                  {entry.id === "all" ? market.length : marketCounts[entry.id] ?? 0}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {marketLoading && market.length === 0 ? (
             <div className="grid">
               {[0, 1, 2, 3, 4, 5].map((index) => (
                 <div className="skel skel-card" key={index} />
@@ -289,8 +375,12 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
             </div>
           ) : visibleMarket.length === 0 ? (
             <div className="empty">
-              <h3>No results</h3>
-              <p>Try a different word, or search by a skill name.</p>
+              <h3>{market.length === 0 ? "No results" : `Nothing under ${marketLabel} yet`}</h3>
+              <p>
+                {market.length === 0
+                  ? "Try a different word, or search by a skill name."
+                  : "Pick another category, or search ClawHub by name."}
+              </p>
             </div>
           ) : (
             <div className="grid">
@@ -310,7 +400,9 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                 >
                   <div className="card-top">
                     <span className="eyebrow">
-                      ClawHub · {item.kind === "bundle" ? "bundle plugin" : item.kind}
+                      ClawHub ·{" "}
+                      {MARKET_CATEGORIES.find((entry) => entry.id === item.category)?.label ??
+                        item.kind}
                     </span>
                     <button
                       className="icon-btn small"
@@ -319,7 +411,9 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                         if (item.installable) void install(item);
                         else void copy(item.command ?? "");
                       }}
-                      aria-label={item.installable ? `Install ${item.name}` : `Copy the command for ${item.name}`}
+                      aria-label={
+                        item.installable ? `Install ${item.name}` : `Copy the command for ${item.name}`
+                      }
                       title={item.installable ? "Install" : item.command ?? "Copy"}
                     >
                       {busy === item.id ? (
@@ -398,12 +492,72 @@ function LocalDetail({
   notify: (message: string) => void;
   onError: (message: string) => void;
 }) {
+  const [files, setFiles] = useState<SkillFile[]>([]);
+  const [active, setActive] = useState("SKILL.md");
+  const [content, setContent] = useState("");
+  const [draft, setDraft] = useState("");
+  const [mode, setMode] = useState<"view" | "edit">("view");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [target, setTarget] = useState("other");
+  const [importing, setImporting] = useState(false);
+  const readOnly = skill.source === "hermes";
+  const storeCategories = state.categories.filter((entry) => entry.source === "store");
+  const categoryName =
+    state.categories.find((entry) => entry.id === skill.category)?.name ?? skill.category;
 
-  const move = async (target: string) => {
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api
+      .listSkillFiles(skill.source, skill.category, skill.slug)
+      .then((list) => {
+        if (!alive) return;
+        setFiles(list);
+        const first = list.find((file) => file.path === "SKILL.md")?.path ?? list[0]?.path;
+        if (first) setActive(first);
+      })
+      .catch((reason) => {
+        if (alive) onError(String(reason));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [skill.id]);
+
+  useEffect(() => {
+    let alive = true;
+    setMode("view");
+    setLoading(true);
+    api
+      .readSkillFile(skill.source, skill.category, skill.slug, active)
+      .then((text) => {
+        if (!alive) return;
+        setContent(text);
+        setDraft(text);
+      })
+      .catch((reason) => {
+        if (!alive) return;
+        setContent("");
+        setDraft("");
+        onError(String(reason));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [active, skill.id]);
+
+  const move = async (next: string) => {
     try {
-      onState(await api.moveSkill(skill.category, skill.slug, target));
-      notify(`Moved to ${target}`);
+      onState(await api.moveSkill(skill.category, skill.slug, next));
+      notify(`Moved to ${next}`);
     } catch (reason) {
       onError(String(reason));
     }
@@ -419,69 +573,181 @@ function LocalDetail({
     }
   };
 
+  const save = async () => {
+    if (saving || draft === content) return;
+    setSaving(true);
+    try {
+      onState(await api.writeSkillFile(skill.category, skill.slug, active, draft));
+      setContent(draft);
+      setMode("view");
+      notify(`${active} saved`);
+      setFiles(await api.listSkillFiles(skill.source, skill.category, skill.slug));
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const importCopy = async () => {
+    setImporting(true);
+    try {
+      onState(await api.importHermes(skill.category, skill.slug, target));
+      notify(`${skill.name} imported into ${target}`);
+      onClose();
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <>
       <p className="sheet-lead">{skill.description || "No description yet."}</p>
 
-      <section className="sheet-section">
-        <span className="sheet-label">Enabled for the CLI</span>
-        <div className="sheet-line">
-          <span className="sheet-value">
-            {skill.enabled ? "Linked into ~/.agents/skills" : "Off, the link is removed"}
-          </span>
-          <span className="switch" data-on={skill.enabled}>
-            <input
-              type="checkbox"
-              checked={skill.enabled}
-              onChange={async () => {
-                try {
-                  onState(await api.setSkillEnabled(skill.category, skill.slug, !skill.enabled));
-                } catch (reason) {
-                  onError(String(reason));
-                }
-              }}
-              aria-label="Enabled"
-            />
-            <span />
-          </span>
-        </div>
-      </section>
+      <div className="facts">
+        <Fact label="Source" value={readOnly ? "Hermes library" : "Kilgharrah store"} />
+        <Fact
+          label="Status"
+          value={readOnly ? "Read-only" : skill.enabled ? "Linked for the CLI" : "Not linked"}
+        />
+        <Fact label="Category" value={categoryName} />
+        <Fact label="Slug" value={skill.slug} mono />
+        <Fact label="Files" value={`${skill.files} file${skill.files === 1 ? "" : "s"}`} />
+        <Fact label="Updated" value={relativeTime(skill.updatedAt)} />
+        <Fact label="Folder" value={skill.path} mono wide />
+      </div>
 
       <section className="sheet-section">
-        <span className="sheet-label">Category</span>
-        <select
-          className="input"
-          value={skill.category}
-          onChange={(event) => void move(event.target.value)}
-        >
-          {state.categories.map((entry) => (
-            <option key={entry.id} value={entry.id}>
-              {entry.name}
-            </option>
+        <div className="section-head">
+          <span className="sheet-label">Contents</span>
+          <div className="segmented" role="group" aria-label="File mode">
+            <button data-active={mode === "view"} onClick={() => setMode("view")}>
+              {Icon.Eye} View
+            </button>
+            <button
+              data-active={mode === "edit"}
+              disabled={readOnly}
+              title={readOnly ? "Import the skill to edit it" : "Edit this file"}
+              onClick={() => setMode("edit")}
+            >
+              {Icon.Edit} Edit
+            </button>
+          </div>
+        </div>
+
+        <div className="file-list">
+          {files.map((file) => (
+            <button
+              key={file.path}
+              className="file-chip"
+              data-active={file.path === active}
+              onClick={() => setActive(file.path)}
+              title={file.path}
+            >
+              {Icon.File}
+              <span className="file-name">{file.path}</span>
+              <span className="file-size">{formatBytes(file.bytes)}</span>
+            </button>
           ))}
-        </select>
+        </div>
+
+        {loading ? (
+          <div className="skel skel-preview" />
+        ) : mode === "edit" ? (
+          <>
+            <textarea
+              className="input textarea mono editor"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              spellCheck={false}
+              rows={18}
+              aria-label={`Edit ${active}`}
+            />
+            <div className="editor-actions">
+              <span className="sheet-note">
+                {draft === content ? "No changes yet." : "Unsaved changes."}
+              </span>
+              <span className="spacer" />
+              <button
+                className="ghost-btn"
+                disabled={draft === content || saving}
+                onClick={() => setDraft(content)}
+              >
+                Revert
+              </button>
+              <button
+                className="primary compact"
+                disabled={draft === content || saving}
+                onClick={() => void save()}
+              >
+                {saving ? Icon.Spinner : Icon.Check} Save
+              </button>
+            </div>
+          </>
+        ) : content ? (
+          <div className="reader-wrap">
+            <Markdown text={content} />
+          </div>
+        ) : (
+          <p className="sheet-note">Pick a file to read it.</p>
+        )}
       </section>
 
-      <section className="sheet-section">
-        <span className="sheet-label">Files</span>
-        <div className="meta">
-          <MetaRow label="Folder" value={skill.path} mono />
-          <MetaRow label="Contents" value={`${skill.files} file${skill.files === 1 ? "" : "s"}`} />
-          <MetaRow label="Updated" value={relativeTime(skill.updatedAt)} />
-        </div>
-      </section>
+      {readOnly ? (
+        <section className="sheet-section">
+          <span className="sheet-label">Import into the store</span>
+          <p className="sheet-note">
+            Hermes keeps and regenerates its own copy. Import the skill to edit it, link it for the
+            CLI, and keep your changes.
+          </p>
+          <div className="import-row">
+            <select className="input" value={target} onChange={(event) => setTarget(event.target.value)}>
+              {storeCategories.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name}
+                </option>
+              ))}
+            </select>
+            <button
+              className="primary compact"
+              disabled={importing}
+              onClick={() => void importCopy()}
+            >
+              {importing ? Icon.Spinner : Icon.Import} Import
+            </button>
+          </div>
+        </section>
+      ) : (
+        <section className="sheet-section">
+          <span className="sheet-label">Move to category</span>
+          <select className="input" value={skill.category} onChange={(event) => void move(event.target.value)}>
+            {storeCategories.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.name}
+              </option>
+            ))}
+          </select>
+        </section>
+      )}
 
       <div className="sheet-actions">
         <button
           className="ghost-btn"
           onClick={() => api.revealStore().catch((reason) => onError(String(reason)))}
         >
-          {Icon.Folder} Show in Finder
+          {Icon.Folder} Show store
         </button>
         <span className="spacer" />
-        <button className="ghost-btn danger" onClick={() => (confirming ? void remove() : setConfirming(true))}>
-          {Icon.Trash} {confirming ? "Confirm remove" : "Remove"}
-        </button>
+        {!readOnly && (
+          <button
+            className="ghost-btn danger"
+            onClick={() => (confirming ? void remove() : setConfirming(true))}
+          >
+            {Icon.Trash} {confirming ? "Confirm remove" : "Remove"}
+          </button>
+        )}
       </div>
     </>
   );
@@ -500,9 +766,14 @@ function MarketDetail({
   onInstall: (item: CatalogItem, category?: string) => void;
   onError: (message: string) => void;
 }) {
-  const [category, setCategory] = useState("other");
+  const storeCategories = state.categories.filter((entry) => entry.source === "store");
+  const [category, setCategory] = useState(() =>
+    storeCategories.some((entry) => entry.id === item.category) ? item.category : "other"
+  );
   const [preview, setPreview] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(true);
+  const label =
+    MARKET_CATEGORIES.find((entry) => entry.id === item.category)?.label ?? item.category;
 
   useEffect(() => {
     let alive = true;
@@ -512,7 +783,7 @@ function MarketDetail({
     }
     setPreviewing(true);
     api
-      .previewMarket(item.slug)
+      .previewMarket(item.slug, item.owner)
       .then((text) => {
         if (alive) setPreview(text);
       })
@@ -531,22 +802,31 @@ function MarketDetail({
     <>
       <p className="sheet-lead">{item.summary || "No summary provided."}</p>
 
-      <section className="sheet-section">
-        <span className="sheet-label">Details</span>
-        <div className="meta">
-          <MetaRow label="Owner" value={item.owner} />
-          <MetaRow label="Version" value={item.version || "unversioned"} />
-          <MetaRow label="Downloads" value={item.downloads.toLocaleString()} />
-          <MetaRow label="Kind" value={item.kind} />
+      <div className="facts">
+        <Fact label="Owner" value={item.owner} />
+        <Fact label="Version" value={item.version || "unversioned"} />
+        <Fact label="Downloads" value={item.downloads.toLocaleString()} />
+        <Fact label="Category" value={label} />
+        <Fact label="Kind" value={item.kind === "bundle" ? "bundle plugin" : item.kind} />
+        <Fact label="Installable" value={item.installable ? "as a skill" : "as a package"} />
+      </div>
+
+      {item.topics.length > 0 && (
+        <div className="chips-row">
+          {item.topics.slice(0, 14).map((topic) => (
+            <span className="chip" key={topic}>
+              {topic}
+            </span>
+          ))}
         </div>
-      </section>
+      )}
 
       {item.installable ? (
         <>
           <section className="sheet-section">
             <span className="sheet-label">Install into</span>
             <select className="input" value={category} onChange={(event) => setCategory(event.target.value)}>
-              {state.categories.map((entry) => (
+              {storeCategories.map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entry.name}
                 </option>
@@ -556,9 +836,15 @@ function MarketDetail({
 
           <section className="sheet-section">
             <span className="sheet-label">SKILL.md</span>
-            <div className="preview" aria-busy={previewing}>
-              {previewing ? <div className="skel skel-preview" /> : preview || "No preview available."}
-            </div>
+            {previewing ? (
+              <div className="skel skel-preview" />
+            ) : preview ? (
+              <div className="reader-wrap tall">
+                <Markdown text={preview} />
+              </div>
+            ) : (
+              <p className="sheet-note">No preview available.</p>
+            )}
             <p className="sheet-note">
               Skills are instructions, not sandboxes. Read the file before you install.
             </p>
@@ -579,8 +865,8 @@ function MarketDetail({
             {Icon.Copy} Copy install command
           </button>
           <p className="sheet-note">
-            Plugins ship their own runtime. Kilgharrah copies the package command instead of editing your
-            MCP config.
+            Plugins ship their own runtime. Kilgharrah copies the package command instead of editing
+            your MCP config.
           </p>
         </div>
       )}
@@ -601,9 +887,10 @@ function ComposeDialog({
   notify: (message: string) => void;
   onError: (message: string) => void;
 }) {
+  const storeCategories = state.categories.filter((entry) => entry.source === "store");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [category, setCategory] = useState("design");
+  const [category, setCategory] = useState(storeCategories[0]?.id ?? "design");
   const [body, setBody] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -669,7 +956,7 @@ function ComposeDialog({
           <label className="field">
             <span>Category</span>
             <select className="input" value={category} onChange={(event) => setCategory(event.target.value)}>
-              {state.categories.map((entry) => (
+              {storeCategories.map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entry.name}
                 </option>
@@ -704,15 +991,32 @@ function ComposeDialog({
   );
 }
 
-function MetaRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Fact({
+  label,
+  value,
+  mono,
+  wide
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  wide?: boolean;
+}) {
   return (
-    <div className="meta-row">
-      <span>{label}</span>
-      <span className={mono ? "mono" : undefined} title={value}>
+    <div className={wide ? "fact wide" : "fact"}>
+      <span className="fact-label">{label}</span>
+      <span className={mono ? "fact-value mono" : "fact-value"} title={value}>
         {value}
       </span>
     </div>
   );
+}
+
+function formatBytes(bytes: number) {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function relativeTime(seconds: number) {

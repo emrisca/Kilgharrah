@@ -12,7 +12,9 @@ use std::time::{Duration, UNIX_EPOCH};
 const BASE: &str = "https://clawhub.ai";
 const MAX_FILES: usize = 200;
 const MAX_BYTES: u64 = 12 * 1024 * 1024;
+const MAX_READ: u64 = 512 * 1024;
 const PREVIEW_CHARS: usize = 20_000;
+const MAX_SCAN_DEPTH: usize = 4;
 
 /// The store's fixed category set. Extra folders the user adds are still read.
 const CATEGORIES: [(&str, &str); 6] = [
@@ -24,6 +26,67 @@ const CATEGORIES: [(&str, &str); 6] = [
     ("other", "Imported and uncategorised"),
 ];
 
+/// Local shelves for the ClawHub registry. The registry exposes topics, not a
+/// category filter, so Kilgharrah groups skills by matching those topics.
+const MARKET_CATEGORIES: [(&str, &str, &[&str]); 12] = [
+    (
+        "design",
+        "Design",
+        &["design", "ui", "ux", "css", "figma", "tailwind", "typography", "color", "motion", "animation", "icon", "layout", "theme", "visual", "shader"],
+    ),
+    (
+        "development",
+        "Development",
+        &["code", "git", "github", "gitlab", "api", "sdk", "deploy", "build", "test", "debug", "rust", "python", "typescript", "javascript", "react", "node", "sql", "database", "devops", "docker", "kubernetes", "backend", "frontend", "compiler", "cli"],
+    ),
+    (
+        "writing",
+        "Writing",
+        &["writ", "docs", "documentation", "copy", "blog", "prose", "edit", "translat", "markdown", "summary", "summarize", "humanize"],
+    ),
+    (
+        "research",
+        "Research",
+        &["research", "search", "web search", "news", "rss", "arxiv", "source", "citation", "scrape", "crawl", "competitor"],
+    ),
+    (
+        "data",
+        "Data",
+        &["data", "json", "csv", "analytics", "spreadsheet", "visualization", "chart", "excel", "ontology"],
+    ),
+    (
+        "productivity",
+        "Productivity",
+        &["productivity", "calendar", "email", "gmail", "task", "note", "notion", "obsidian", "meeting", "booking", "reminder", "inbox"],
+    ),
+    (
+        "media",
+        "Media",
+        &["media", "video", "audio", "music", "image", "photo", "screenshot", "youtube", "transcri", "pdf", "design asset"],
+    ),
+    (
+        "marketing",
+        "Marketing",
+        &["marketing", "seo", "social", "ads", "growth", "commerce", "shopify", "sales", "crm", "pricing"],
+    ),
+    (
+        "automation",
+        "Automation",
+        &["automation", "workflow", "n8n", "zapier", "cron", "orchestrat", "mcp", "pipeline", "agent-to-agent"],
+    ),
+    (
+        "security",
+        "Security",
+        &["security", "privacy", "permission", "audit", "sandbox", "scan", "secret", "vet", "malware", "trust"],
+    ),
+    (
+        "ai",
+        "AI and agents",
+        &["ai", "llm", "model", "prompt", "embedding", "openai", "anthropic", "agent memory", "self improv", "learning", "context"],
+    ),
+    ("other", "Other", &[]),
+];
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Category {
@@ -31,11 +94,14 @@ struct Category {
     name: String,
     blurb: String,
     count: usize,
+    source: String,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Skill {
+    id: String,
+    source: String,
     slug: String,
     name: String,
     description: String,
@@ -44,6 +110,13 @@ struct Skill {
     enabled: bool,
     files: usize,
     updated_at: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SkillFile {
+    path: String,
+    bytes: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -61,6 +134,7 @@ struct McpServer {
 struct AppState {
     store: String,
     skills_root: String,
+    hermes_root: String,
     mcp_path: String,
     categories: Vec<Category>,
     skills: Vec<Skill>,
@@ -78,20 +152,33 @@ struct CatalogItem {
     summary: String,
     version: String,
     downloads: u64,
+    category: String,
+    topics: Vec<String>,
     installable: bool,
     command: Option<String>,
 }
 
 // ---------------------------------------------------------------- locations
 
+fn home_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .unwrap_or_default();
+    PathBuf::from(home)
+}
+
 fn agents_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("KILGHARRAH_HOME") {
         return PathBuf::from(custom);
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .unwrap_or_default();
-    PathBuf::from(home).join(".agents")
+    home_dir().join(".agents")
+}
+
+fn hermes_root() -> PathBuf {
+    if let Some(custom) = std::env::var_os("KILGHARRAH_HERMES") {
+        return PathBuf::from(custom);
+    }
+    home_dir().join(".hermes").join("skills")
 }
 
 fn store_root() -> PathBuf {
@@ -271,7 +358,6 @@ fn link_skill(slug: &str, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(unix))]
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
@@ -295,48 +381,75 @@ fn unlink_skill(slug: &str) {
     }
 }
 
-fn scan_skills() -> Vec<Skill> {
-    let mut skills = Vec::new();
-    let Ok(categories) = fs::read_dir(skills_store()) else {
-        return skills;
+fn collect_skills(root: PathBuf, source: &str, out: &mut Vec<(PathBuf, String, String)>) {
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
     };
-    for category in categories.flatten() {
-        let category_path = category.path();
-        if !category_path.is_dir() {
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
             continue;
         }
-        let Some(category_id) = category_path.file_name().and_then(|n| n.to_str()) else {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
             continue;
         };
-        let Ok(entries) = fs::read_dir(&category_path) else {
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.join("SKILL.md").is_file() {
+            out.push((path, "other".to_string(), source.to_string()));
+            continue;
+        }
+        let Ok(children) = fs::read_dir(&path) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let dir = entry.path();
-            let manifest = dir.join("SKILL.md");
-            if !dir.is_dir() || !manifest.is_file() {
-                continue;
+        for child in children.flatten() {
+            let dir = child.path();
+            if dir.is_dir() && dir.join("SKILL.md").is_file() {
+                out.push((dir, name.clone(), source.to_string()));
             }
-            let Ok(text) = fs::read_to_string(&manifest) else {
-                continue;
-            };
-            let (name, description) = parse_frontmatter(&text);
-            let slug = dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            skills.push(Skill {
-                name: name.filter(|n| !n.is_empty()).unwrap_or_else(|| titleize(&slug)),
-                description: description.unwrap_or_default(),
-                category: category_id.to_string(),
-                path: dir.display().to_string(),
-                enabled: is_enabled(&slug),
-                files: count_files(&dir, 3),
-                updated_at: modified_secs(&manifest),
-                slug,
-            });
         }
+    }
+}
+
+fn scan_skills() -> Vec<Skill> {
+    scan_roots(skills_store(), hermes_root())
+}
+
+fn scan_roots(store: PathBuf, hermes: PathBuf) -> Vec<Skill> {
+    let mut candidates: Vec<(PathBuf, String, String)> = Vec::new();
+    collect_skills(store, "store", &mut candidates);
+    collect_skills(hermes, "hermes", &mut candidates);
+
+    let mut skills = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (dir, category, source) in candidates {
+        let manifest = dir.join("SKILL.md");
+        let Ok(text) = fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let slug = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if slug.is_empty() || seen.iter().any(|value| value == &slug) {
+            continue;
+        }
+        seen.push(slug.clone());
+        let (name, description) = parse_frontmatter(&text);
+        skills.push(Skill {
+            id: format!("{source}:{category}:{slug}"),
+            source: source.clone(),
+            name: name.filter(|n| !n.is_empty()).unwrap_or_else(|| titleize(&slug)),
+            description: description.unwrap_or_default(),
+            category,
+            path: dir.display().to_string(),
+            enabled: source == "store" && is_enabled(&slug),
+            files: count_files(&dir, 3),
+            updated_at: modified_secs(&manifest),
+            slug,
+        });
     }
     skills.sort_by(|a, b| {
         let rank = |id: &str| CATEGORIES.iter().position(|(c, _)| *c == id).unwrap_or(99);
@@ -348,30 +461,31 @@ fn scan_skills() -> Vec<Skill> {
 }
 
 fn list_categories(skills: &[Skill]) -> Vec<Category> {
-    let mut seen: Vec<(String, String)> = CATEGORIES
+    let mut order: Vec<(String, String, String)> = CATEGORIES
         .iter()
-        .map(|(id, blurb)| (id.to_string(), blurb.to_string()))
+        .map(|(id, blurb)| (id.to_string(), blurb.to_string(), "store".to_string()))
         .collect();
-    if let Ok(entries) = fs::read_dir(skills_store()) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let Some(id) = entry.file_name().to_str().map(String::from) else {
-                continue;
-            };
-            if !seen.iter().any(|(existing, _)| existing == &id) {
-                seen.push((id, String::new()));
-            }
+    for skill in skills {
+        if order.iter().any(|(id, _, _)| id == &skill.category) {
+            continue;
         }
+        let blurb = if skill.source == "hermes" {
+            "Hermes library"
+        } else {
+            "Your own folder"
+        };
+        order.push((skill.category.clone(), blurb.to_string(), skill.source.clone()));
     }
-    seen.into_iter()
-        .map(|(id, blurb)| Category {
+    order
+        .into_iter()
+        .map(|(id, blurb, source)| Category {
             count: skills.iter().filter(|s| s.category == id).count(),
             name: titleize(&id),
             blurb,
+            source,
             id,
         })
+        .filter(|entry| entry.count > 0 || CATEGORIES.iter().any(|(id, _)| *id == entry.id))
         .collect()
 }
 
@@ -488,11 +602,60 @@ fn encode(value: &str) -> String {
     out
 }
 
+fn mentions(haystack: &str, needle: &str) -> bool {
+    if needle.len() > 3 {
+        return haystack.contains(needle);
+    }
+    haystack
+        .split(|value: char| !value.is_alphanumeric())
+        .any(|word| word == needle)
+}
+
+fn bucket_for(topics: &str, name: &str, summary: &str) -> String {
+    let prose = format!("{} {}", name.to_lowercase(), summary.to_lowercase());
+    let mut best = ("other", 0usize);
+    for (id, _, words) in MARKET_CATEGORIES {
+        let mut score = 0;
+        for word in words {
+            if mentions(topics, word) {
+                score += 3;
+            }
+            if mentions(&prose, word) {
+                score += 1;
+            }
+        }
+        if score > best.1 {
+            best = (id, score);
+        }
+    }
+    best.0.to_string()
+}
+
+fn skill_topics(value: &Value) -> Vec<String> {
+    value
+        .get("topics")
+        .and_then(|v| v.as_array())
+        .or_else(|| {
+            value
+                .get("native")
+                .and_then(|n| n.get("skill"))
+                .and_then(|s| s.get("topics"))
+                .and_then(|v| v.as_array())
+        })
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn skill_item(value: &Value) -> Option<CatalogItem> {
     let slug = value.get("slug")?.as_str()?.to_string();
     let owner = value
         .get("ownerHandle")
         .and_then(|v| v.as_str())
+        .or_else(|| value.get("native").and_then(|n| n.get("ownerHandle")).and_then(|v| v.as_str()))
         .or_else(|| value.get("owner").and_then(|o| o.get("handle")).and_then(|v| v.as_str()))
         .unwrap_or("clawhub")
         .to_string();
@@ -506,9 +669,17 @@ fn skill_item(value: &Value) -> Option<CatalogItem> {
         .get("version")
         .and_then(|v| v.as_str())
         .or_else(|| value.get("latestVersion").and_then(|v| v.as_str()))
+        .or_else(|| {
+            value
+                .get("latestVersion")
+                .and_then(|v| v.get("version"))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or_default()
         .to_string();
     let downloads = value.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
+    let topics = skill_topics(value);
+    let category = bucket_for(&topics.join(" ").to_lowercase(), &name, &summary);
     Some(CatalogItem {
         id: format!("skill:{owner}:{slug}"),
         kind: "skill".into(),
@@ -518,6 +689,8 @@ fn skill_item(value: &Value) -> Option<CatalogItem> {
         summary,
         version,
         downloads,
+        category,
+        topics,
         installable: true,
         command: None,
     })
@@ -556,6 +729,8 @@ fn package_item(value: &Value) -> Option<CatalogItem> {
         summary,
         version,
         downloads,
+        category: "development".into(),
+        topics: Vec::new(),
         installable: false,
         command: Some(format!("npm install {name}")),
     })
@@ -598,6 +773,7 @@ fn build_state() -> Result<AppState, String> {
     Ok(AppState {
         store: store_root().display().to_string(),
         skills_root: links_root().display().to_string(),
+        hermes_root: hermes_root().display().to_string(),
         mcp_path: mcp_path().display().to_string(),
         categories: list_categories(&skills),
         skills,
@@ -764,54 +940,131 @@ fn delete_server(name: String) -> Result<AppState, String> {
 
 #[tauri::command]
 fn search_market(query: String, limit: Option<u32>) -> Result<Vec<CatalogItem>, String> {
-    let limit = limit.unwrap_or(24).clamp(1, 50);
+    let limit = limit.unwrap_or(24).clamp(1, 300) as usize;
     let query = query.trim().to_string();
-    let mut items = Vec::new();
+    let mut items: Vec<CatalogItem> = Vec::new();
 
     if query.is_empty() {
-        let value = get_json(&format!("{BASE}/api/v1/skills?sort=downloads&limit={limit}"))?;
-        if let Some(rows) = value.get("items").and_then(|v| v.as_array()) {
+        items = skill_pool(limit)?;
+    } else {
+        let encoded = encode(&query);
+        let skills = get_json(&format!(
+            "{BASE}/api/v1/search?q={encoded}&limit={}",
+            limit.min(60)
+        ))?;
+        if let Some(rows) = skills.get("results").and_then(|v| v.as_array()) {
             items.extend(rows.iter().filter_map(skill_item));
         }
-        return Ok(items);
+        let packages = get_json(&format!("{BASE}/api/v1/packages/search?q={encoded}&limit=8"))?;
+        if let Some(rows) = packages.get("results").and_then(|v| v.as_array()) {
+            items.extend(rows.iter().filter_map(package_item));
+        }
     }
 
-    let encoded = encode(&query);
-    let skills = get_json(&format!("{BASE}/api/v1/search?q={encoded}&limit={limit}"))?;
-    if let Some(rows) = skills.get("results").and_then(|v| v.as_array()) {
-        items.extend(rows.iter().filter_map(skill_item));
+    let mut unique: Vec<CatalogItem> = Vec::new();
+    for item in items {
+        if unique.iter().any(|existing| existing.id == item.id) {
+            continue;
+        }
+        unique.push(item);
     }
-    let packages = get_json(&format!("{BASE}/api/v1/packages/search?q={encoded}&limit=8"))?;
-    if let Some(rows) = packages.get("results").and_then(|v| v.as_array()) {
-        items.extend(rows.iter().filter_map(package_item));
+    unique.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+    Ok(unique)
+}
+
+fn skill_pool(limit: usize) -> Result<Vec<CatalogItem>, String> {
+    let mut items: Vec<CatalogItem> = Vec::new();
+    // ClawHub serves the same page for cursor, offset and page parameters, so
+    // every loop stops when a page adds nothing. Two sorts widen the pool.
+    for sort in ["downloads", "newest", "trending"] {
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        while items.len() < limit && pages < 2 {
+            pages += 1;
+            let page = (limit - items.len()).min(100);
+            let mut url = format!("{BASE}/api/v1/skills?sort={sort}&limit={page}");
+            if let Some(token) = &cursor {
+                url.push_str(&format!("&cursor={}", encode(token)));
+            }
+            let value = get_json(&url)?;
+            let rows = value
+                .get("items")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut added = 0;
+            for row in &rows {
+                if let Some(item) = skill_item(row) {
+                    if !items.iter().any(|existing| existing.id == item.id) {
+                        items.push(item);
+                        added += 1;
+                    }
+                }
+            }
+            let next = value
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            if added == 0 || next.is_none() || next == cursor {
+                break;
+            }
+            cursor = next;
+        }
+        if items.len() >= limit {
+            break;
+        }
     }
+    items.truncate(limit);
     Ok(items)
 }
 
 #[tauri::command]
-fn preview_market(slug: String) -> Result<String, String> {
+fn preview_market(slug: String, owner: Option<String>) -> Result<String, String> {
     if !safe_segment(&slug) {
         return Err("That skill name is not valid.".into());
     }
-    let bytes = get_bytes(&format!("{BASE}/api/v1/skills/{slug}/file?path=SKILL.md"))?;
+    let mut url = format!("{BASE}/api/v1/skills/{}/file?path=SKILL.md", encode(&slug));
+    if let Some(owner) = owner.filter(|value| safe_segment(value)) {
+        url.push_str(&format!("&owner={}", encode(&owner)));
+    }
+    let bytes = get_bytes(&url)?;
     let text = String::from_utf8_lossy(&bytes).to_string();
     Ok(text.chars().take(PREVIEW_CHARS).collect())
 }
 
 #[tauri::command]
-fn install_market(slug: String, category: Option<String>) -> Result<AppState, String> {
+fn install_market(
+    slug: String,
+    owner: Option<String>,
+    category: Option<String>,
+) -> Result<AppState, String> {
     ensure_store()?;
     if !safe_segment(&slug) {
         return Err("That skill name is not valid.".into());
     }
-    let meta = get_json(&format!("{BASE}/api/v1/skills/{slug}"))?;
+    let owner = owner.unwrap_or_default().trim().to_string();
+    let owner_query = if owner.is_empty() {
+        String::new()
+    } else {
+        format!("?owner={}", encode(&owner))
+    };
+    let owner_suffix = if owner.is_empty() {
+        String::new()
+    } else {
+        format!("&owner={}", encode(&owner))
+    };
+    let meta = get_json(&format!("{BASE}/api/v1/skills/{}{owner_query}", encode(&slug)))?;
     let version = meta
         .get("latestVersion")
         .and_then(|v| v.get("version"))
         .and_then(|v| v.as_str())
         .ok_or("ClawHub has no published version for that skill.")?
         .to_string();
-    let detail = get_json(&format!("{BASE}/api/v1/skills/{slug}/versions/{version}"))?;
+    let detail = get_json(&format!(
+        "{BASE}/api/v1/skills/{}/versions/{}{owner_query}",
+        encode(&slug),
+        encode(&version)
+    ))?;
     let files = detail
         .get("version")
         .and_then(|v| v.get("files"))
@@ -837,7 +1090,8 @@ fn install_market(slug: String, category: Option<String>) -> Result<AppState, St
             return Err("ClawHub listed a file path Kilgharrah will not write.".into());
         };
         let url = format!(
-            "{BASE}/api/v1/skills/{slug}/file?path={}&version={}",
+            "{BASE}/api/v1/skills/{}/file?path={}&version={}{owner_suffix}",
+            encode(&slug),
             encode(&relative.to_string_lossy()),
             encode(&version)
         );
@@ -864,6 +1118,119 @@ fn install_market(slug: String, category: Option<String>) -> Result<AppState, St
     }
     if let Err(error) = link_skill(&slug, &dir) {
         let _ = fs::remove_dir_all(&dir);
+        return Err(error);
+    }
+    build_state()
+}
+
+fn skill_dir(source: &str, category: &str, slug: &str) -> Result<PathBuf, String> {
+    if !safe_segment(category) || !safe_segment(slug) {
+        return Err("That skill path is not valid.".into());
+    }
+    let root = match source {
+        "store" => skills_store(),
+        "hermes" => hermes_root(),
+        _ => return Err("Unknown skill source.".into()),
+    };
+    let dir = root.join(category).join(slug);
+    if !dir.join("SKILL.md").is_file() {
+        return Err("That skill has no SKILL.md.".into());
+    }
+    Ok(dir)
+}
+
+fn walk_files(dir: &Path, base: &Path, depth: usize, out: &mut Vec<SkillFile>) {
+    if depth == 0 || out.len() >= 400 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            walk_files(&path, base, depth - 1, out);
+        } else if let Ok(relative) = path.strip_prefix(base) {
+            out.push(SkillFile {
+                path: relative.to_string_lossy().to_string(),
+                bytes: fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0),
+            });
+        }
+    }
+}
+
+#[tauri::command]
+fn list_skill_files(source: String, category: String, slug: String) -> Result<Vec<SkillFile>, String> {
+    let dir = skill_dir(&source, &category, &slug)?;
+    let mut files = Vec::new();
+    walk_files(&dir, &dir, MAX_SCAN_DEPTH, &mut files);
+    files.sort_by(|a, b| {
+        let rank = |entry: &SkillFile| if entry.path == "SKILL.md" { 0 } else { 1 };
+        rank(a)
+            .cmp(&rank(b))
+            .then_with(|| a.path.to_lowercase().cmp(&b.path.to_lowercase()))
+    });
+    Ok(files)
+}
+
+#[tauri::command]
+fn read_skill_file(
+    source: String,
+    category: String,
+    slug: String,
+    path: String,
+) -> Result<String, String> {
+    let dir = skill_dir(&source, &category, &slug)?;
+    let relative = safe_relative(&path).ok_or("That file path is not valid.")?;
+    let target = dir.join(&relative);
+    if !target.is_file() {
+        return Err("That file is not part of this skill.".into());
+    }
+    let meta = fs::metadata(&target).map_err(|e| format!("Could not read the file: {e}"))?;
+    if meta.len() > MAX_READ {
+        return Err("That file is too large to open here.".into());
+    }
+    let bytes = fs::read(&target).map_err(|e| format!("Could not read the file: {e}"))?;
+    String::from_utf8(bytes).map_err(|_| "That file is not plain text.".to_string())
+}
+
+#[tauri::command]
+fn write_skill_file(
+    category: String,
+    slug: String,
+    path: String,
+    content: String,
+) -> Result<AppState, String> {
+    let dir = skill_dir("store", &category, &slug)?;
+    let relative = safe_relative(&path).ok_or("That file path is not valid.")?;
+    let target = dir.join(&relative);
+    if !target.is_file() {
+        return Err("That file is not part of this skill.".into());
+    }
+    fs::write(&target, content).map_err(|e| format!("Could not save the file: {e}"))?;
+    build_state()
+}
+
+#[tauri::command]
+fn import_hermes(category: String, slug: String, target: String) -> Result<AppState, String> {
+    ensure_store()?;
+    if !safe_segment(&target) || !skills_store().join(&target).is_dir() {
+        return Err("Pick one of the store categories.".into());
+    }
+    let from = skill_dir("hermes", &category, &slug)?;
+    let to = skills_store().join(&target).join(&slug);
+    if to.exists() {
+        return Err(format!("{slug} is already in {target}."));
+    }
+    copy_dir(&from, &to).map_err(|e| format!("Could not copy the skill: {e}"))?;
+    if let Err(error) = link_skill(&slug, &to) {
+        let _ = fs::remove_dir_all(&to);
         return Err(error);
     }
     build_state()
@@ -914,6 +1281,10 @@ fn main() {
             search_market,
             preview_market,
             install_market,
+            list_skill_files,
+            read_skill_file,
+            write_skill_file,
+            import_hermes,
             open_url,
             reveal_store
         ])
@@ -953,5 +1324,45 @@ mod tests {
     fn categories_are_titled() {
         assert_eq!(titleize("design"), "Design");
         assert_eq!(titleize("data-ops"), "Data ops");
+    }
+
+    #[test]
+    fn market_buckets_follow_topics() {
+        assert_eq!(bucket_for("figma tailwind", "Layout kit", "UI work"), "design");
+        assert_eq!(bucket_for("", "News digest", "Search the web for news"), "research");
+        assert_eq!(bucket_for("", "Quiet helper", "Nothing in particular"), "other");
+    }
+
+    #[test]
+    fn short_words_need_boundaries() {
+        assert!(!mentions("email detail", "ai"));
+        assert!(mentions("ai tools", "ai"));
+        assert!(mentions("codebase work", "code"));
+    }
+
+    #[test]
+    fn hermes_skills_are_scanned_and_deduped() {
+        let root = std::env::temp_dir().join(format!("kilgharrah-scan-{}", std::process::id()));
+        let store = root.join("store");
+        let hermes = root.join("hermes");
+        let write = |path: &Path, name: &str| {
+            fs::create_dir_all(path).unwrap();
+            fs::write(path.join("SKILL.md"), format!("---\nname: {name}\n---\n\nBody\n")).unwrap();
+        };
+        write(&store.join("design/apple-design"), "Apple");
+        write(&hermes.join("creative/p5js"), "p5js");
+        write(&hermes.join("kilgharrah/apple-design"), "Apple copy");
+
+        let skills = scan_roots(store, hermes);
+        let apple: Vec<&Skill> = skills.iter().filter(|s| s.slug == "apple-design").collect();
+        assert_eq!(apple.len(), 1, "the store copy wins the duplicate slug");
+        assert_eq!(apple[0].source, "store");
+        assert_eq!(apple[0].category, "design");
+        let p5 = skills.iter().find(|s| s.slug == "p5js").expect("hermes skill listed");
+        assert_eq!(p5.source, "hermes");
+        assert_eq!(p5.category, "creative");
+        assert_eq!(p5.id, "hermes:creative:p5js");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

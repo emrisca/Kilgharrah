@@ -3,6 +3,7 @@ import { api } from "./api";
 import type { AppState } from "./types";
 import { SkillsView } from "./components/SkillsView";
 import { McpView } from "./components/McpView";
+import { SettingsView } from "./components/SettingsView";
 import { Icon } from "./components/Icons";
 
 type Theme = "dark" | "light";
@@ -10,7 +11,7 @@ const THEME_KEY = "kilgharrah.theme";
 
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
-  const [tab, setTab] = useState<"skills" | "mcp">("skills");
+  const [tab, setTab] = useState<"skills" | "mcp" | "settings">("skills");
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(() => {
@@ -65,6 +66,9 @@ export default function App() {
           <button className="tab" data-active={tab === "mcp"} onClick={() => setTab("mcp")}>
             MCP servers <span className="tab-count">{state?.servers.length ?? 0}</span>
           </button>
+          <button className="tab" data-active={tab === "settings"} onClick={() => setTab("settings")}>
+            {Icon.Settings} Settings
+          </button>
         </nav>
 
         <div className="top-actions">
@@ -97,10 +101,18 @@ export default function App() {
             notify={setToast}
             onError={(message) => setError(message)}
           />
-        ) : (
+        ) : tab === "mcp" ? (
           <McpView
             state={state}
             onState={setState}
+            notify={setToast}
+            onError={(message) => setError(message)}
+          />
+        ) : (
+          <SettingsView
+            state={state}
+            theme={theme}
+            onTheme={setTheme}
             notify={setToast}
             onError={(message) => setError(message)}
           />
