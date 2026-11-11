@@ -1,0 +1,8 @@
+# Build output
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# macOS folder metadata
+.DS_Store
