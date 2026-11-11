@@ -6,3 +6,6 @@ src-tauri/gen/schemas/
 
 # macOS folder metadata
 .DS_Store
+
+# Python bytecode
+__pycache__/

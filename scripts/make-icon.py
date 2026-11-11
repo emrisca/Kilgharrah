@@ -1,88 +1,99 @@
 #!/usr/bin/env python3
-"""Render the Kilgharrah icon set without any image library.
+"""Render the Kilgharrah icon set from `ascii-art.txt`, with no image library.
 
-Draws a dark rounded tile with the green monogram, then hands the 1024px
-master to sips and iconutil for the sizes Tauri bundles.
+The dragon from the ASCII art is rebuilt as a green mosaic: every art cell
+becomes a lit tile, so the silhouette survives at small sizes while the
+character grid still shows up close. The 1024px master is then handed to sips
+and iconutil for the sizes Tauri bundles.
 """
 
-import math
 import os
 import shutil
 import struct
 import subprocess
 import tempfile
-import zlib
+
+from ascii_render import Canvas, draw_glyph, load_rows, rounded_rect_alpha, smoothstep
 
 SIZE = 1024
-ACCENT = (61, 220, 132)
-TOP = (21, 27, 36)
-BOTTOM = (9, 12, 16)
+INSET = 0.055 * SIZE
+RADIUS = 0.235 * SIZE
+TOP = (0.082, 0.106, 0.141)
+BOTTOM = (0.035, 0.047, 0.063)
+GLOW = (0.02, 0.10, 0.055)
+
+# Crop around the dragon and its ledge so the mark stays centred and square.
+CROP_ROWS = (0, 28)
+CROP_COLS = (20, 82)
+ART_BOX = 0.84 * SIZE
+CELL_ASPECT = 0.56  # character cell width over height
+CELL_GAP = 0.9
+GLYPH_ALPHA = 0.25
 
 
-def smoothstep(edge0, edge1, value):
-    t = max(0.0, min(1.0, (value - edge0) / (edge1 - edge0)))
-    return t * t * (3.0 - 2.0 * t)
-
-
-def rounded_distance(px, py, half, radius):
-    dx = abs(px - SIZE / 2) - (half - radius)
-    dy = abs(py - SIZE / 2) - (half - radius)
-    outside = math.hypot(max(dx, 0.0), max(dy, 0.0))
-    inside = min(max(dx, dy), 0.0)
-    return outside + inside - radius
-
-
-def segment_distance(px, py, ax, ay, bx, by):
-    vx, vy = bx - ax, by - ay
-    wx, wy = px - ax, py - ay
-    t = max(0.0, min(1.0, (wx * vx + wy * vy) / (vx * vx + vy * vy)))
-    return math.hypot(wx - t * vx, wy - t * vy)
-
-
-def pixel(x, y):
-    inset = 0.055 * SIZE
-    half = SIZE / 2 - inset
-    distance = rounded_distance(x, y, half, 0.235 * SIZE)
-    alpha = 1.0 - smoothstep(-1.0, 1.0, distance)
-    if alpha <= 0.0:
-        return (0, 0, 0, 0)
-
+def tile_color(x, y):
     blend = y / SIZE
-    red = int(TOP[0] + (BOTTOM[0] - TOP[0]) * blend)
-    green = int(TOP[1] + (BOTTOM[1] - TOP[1]) * blend)
-    blue = int(TOP[2] + (BOTTOM[2] - TOP[2]) * blend)
-
-    scale = SIZE
-    strokes = [
-        (0.34, 0.265, 0.34, 0.755),
-        (0.34, 0.527, 0.665, 0.265),
-        (0.447, 0.44, 0.68, 0.745),
-    ]
-    mark = min(
-        segment_distance(x, y, a * scale, b * scale, c * scale, d * scale)
-        for a, b, c, d in strokes
-    )
-    ink = 1.0 - smoothstep(0.036 * SIZE - 1.2, 0.036 * SIZE + 1.2, mark)
-    if ink > 0.0:
-        red = int(red + (ACCENT[0] - red) * ink)
-        green = int(green + (ACCENT[1] - green) * ink)
-        blue = int(blue + (ACCENT[2] - blue) * ink)
-    return (red, green, blue, int(round(alpha * 255)))
+    color = tuple(TOP[i] + (BOTTOM[i] - TOP[i]) * blend for i in range(3))
+    glow = smoothstep(0.62 * SIZE, 0.05 * SIZE, abs(x - SIZE / 2) + abs(y - SIZE / 2))
+    return tuple(color[i] + GLOW[i] * glow for i in range(3))
 
 
-def write_png(path, size):
-    raw = bytearray()
-    for y in range(size):
-        raw.append(0)
-        for x in range(size):
-            raw.extend(pixel(x, y))
-    def chunk(tag, data):
-        body = tag + data
-        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
-    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
-    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b"")
-    with open(path, "wb") as handle:
-        handle.write(png)
+def tone(char):
+    """Lit brightness for one art character, with `#` left as empty space."""
+
+    if char == "+":
+        return 0.0
+    if char == ".":
+        return 0.5
+    return 1.0
+
+
+def build_master(path):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rows = load_rows(os.path.join(root, "ascii-art.txt"))
+    grid = [row[CROP_COLS[0]:CROP_COLS[1]] for row in rows[CROP_ROWS[0]:CROP_ROWS[1]]]
+    columns, lines = len(grid[0]), len(grid)
+
+    cell_w = ART_BOX / columns
+    cell_h = cell_w / CELL_ASPECT
+    if lines * cell_h > ART_BOX:
+        cell_h = ART_BOX / lines
+        cell_w = cell_h * CELL_ASPECT
+    origin_x = (SIZE - columns * cell_w) / 2
+    origin_y = (SIZE - lines * cell_h) / 2
+
+    canvas = Canvas(SIZE, SIZE, (0.0, 0.0, 0.0, 0.0))
+    for y in range(SIZE):
+        for x in range(SIZE):
+            alpha = rounded_rect_alpha(x, y, INSET, INSET, SIZE - INSET, SIZE - INSET, RADIUS)
+            if alpha > 0.0:
+                canvas.blend(x, y, tile_color(x, y), alpha)
+
+    for line_index, line in enumerate(grid):
+        for column_index, char in enumerate(line):
+            if char == "#":
+                continue
+            level = tone(char)
+            fill = (0.07 + 0.11 * level, 0.36 + 0.36 * level, 0.22 + 0.22 * level)
+            left = origin_x + column_index * cell_w + CELL_GAP
+            top = origin_y + line_index * cell_h + CELL_GAP
+            right = left + cell_w - CELL_GAP * 2
+            bottom = top + cell_h - CELL_GAP * 2
+            for y in range(int(top), int(bottom)):
+                for x in range(int(left), int(right)):
+                    canvas.blend(x, y, fill, 1.0)
+            draw_glyph(
+                canvas,
+                origin_x + column_index * cell_w,
+                origin_y + line_index * cell_h,
+                cell_w,
+                cell_h,
+                char,
+                (0.02, 0.14, 0.08),
+                GLYPH_ALPHA,
+            )
+
+    canvas.write_png(path)
 
 
 def main():
@@ -90,11 +101,15 @@ def main():
     icons = os.path.join(root, "src-tauri", "icons")
     os.makedirs(icons, exist_ok=True)
     master = os.path.join(icons, "icon.png")
-    write_png(master, SIZE)
+    build_master(master)
 
     sizes = [(16, "16x16"), (32, "32x32"), (64, "64x64"), (128, "128x128"), (256, "256x256"), (512, "512x512"), (1024, "1024x1024")]
     for size, _ in sizes:
-        subprocess.run(["sips", "-z", str(size), str(size), master, "--out", os.path.join(icons, f"{size}.png")], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["sips", "-z", str(size), str(size), master, "--out", os.path.join(icons, f"{size}.png")],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
 
     # Names Tauri's bundle config expects.
     shutil.copyfile(os.path.join(icons, "32.png"), os.path.join(icons, "32x32.png"))
