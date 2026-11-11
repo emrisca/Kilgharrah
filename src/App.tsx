@@ -53,7 +53,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
+      <header className="topbar" data-tauri-drag-region>
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
           <span className="brand-name">Kilgharrah</span>

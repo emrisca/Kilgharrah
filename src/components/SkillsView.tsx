@@ -287,19 +287,6 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                       {entry.name} ·{" "}
                       {skill.source === "hermes" ? "Hermes" : skill.enabled ? "on" : "off"}
                     </span>
-                    {skill.source === "store" && (
-                      <button
-                        className="icon-btn small"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void toggle(skill);
-                        }}
-                        aria-label={skill.enabled ? `Disable ${skill.name}` : `Enable ${skill.name}`}
-                        title={skill.enabled ? "Disable" : "Enable"}
-                      >
-                        {skill.enabled ? Icon.Check : Icon.Plus}
-                      </button>
-                    )}
                   </div>
                   <h3>{skill.name}</h3>
                   <p>{skill.description || "No description yet."}</p>

@@ -10,7 +10,8 @@
   --border-strong: rgba(255, 255, 255, 0.15);
   --text: #eef1f5;
   --text-dim: #a3aab5;
-  --text-faint: #6d7481;
+  --text-faint: #87909d;
+  --skeleton: rgba(255, 255, 255, 0.09);
   --accent: #3ddc84;
   --accent-soft: rgba(61, 220, 132, 0.13);
   --accent-line: rgba(61, 220, 132, 0.32);
@@ -27,11 +28,12 @@
   --surface: #ffffff;
   --card: #ffffff;
   --card-2: #f7f8fa;
-  --border: rgba(16, 20, 26, 0.09);
+  --border: rgba(16, 20, 26, 0.13);
   --border-strong: rgba(16, 20, 26, 0.2);
   --text: #14181d;
   --text-dim: #59616c;
-  --text-faint: #858d98;
+  --text-faint: #6b7280;
+  --skeleton: rgba(16, 20, 26, 0.11);
   --accent: #128f52;
   --accent-soft: rgba(18, 143, 82, 0.1);
   --accent-line: rgba(18, 143, 82, 0.3);
@@ -75,6 +77,11 @@ button:disabled {
   cursor: default;
 }
 
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 ::selection {
   background: var(--accent-soft);
 }
@@ -104,7 +111,6 @@ button:disabled {
 /* ------------------------------------------------------------- top bar */
 
 .topbar {
-  -webkit-app-region: drag;
   position: sticky;
   top: 0;
   z-index: 20;
@@ -117,8 +123,8 @@ button:disabled {
   background: var(--bg);
 }
 
-.topbar button {
-  -webkit-app-region: no-drag;
+.topbar .brand {
+  pointer-events: none;
 }
 
 .brand {
@@ -958,7 +964,8 @@ select.pill {
 
 .skel {
   border-radius: 10px;
-  background: linear-gradient(90deg, var(--card) 25%, var(--card-2) 37%, var(--card) 63%);
+  background-color: var(--card-2);
+  background-image: linear-gradient(90deg, transparent 25%, var(--skeleton) 37%, transparent 63%);
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
 }
@@ -1425,6 +1432,10 @@ select.pill {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: linear-gradient(180deg, var(--card), var(--card-2));
+}
+
+.panel .segmented {
+  align-self: flex-start;
 }
 
 .panel-head {
