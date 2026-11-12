@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { AppState, CatalogItem, Skill, SkillFile } from "../types";
+import type { AppState, CatalogItem, InstallJob, Skill, SkillFile } from "../types";
 import { Icon } from "./Icons";
 import { Markdown } from "./Markdown";
 import { Sheet } from "./Sheet";
@@ -35,9 +35,11 @@ type Props = {
   onState: (state: AppState) => void;
   notify: (message: string) => void;
   onError: (message: string) => void;
+  installs: InstallJob[];
+  onInstall: (item: CatalogItem, target: string | null) => void;
 };
 
-export function SkillsView({ state, onState, notify, onError }: Props) {
+export function SkillsView({ state, onState, notify, onError, installs, onInstall }: Props) {
   const [scope, setScope] = useState<Scope>("all");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
@@ -46,7 +48,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   const [marketSort, setMarketSort] = useState<MarketSort>("popular");
   const [marketLoading, setMarketLoading] = useState(true);
   const [nonce, setNonce] = useState(0);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [sharedOnly, setSharedOnly] = useState(false);
   const [selected, setSelected] = useState<Skill | null>(null);
   const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null);
   const [compose, setCompose] = useState(false);
@@ -152,10 +154,15 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
     return counts;
   }, [market]);
 
+  const jobFor = (item: CatalogItem) => installs.find((job) => job.slug === item.slug);
   const visibleMarket =
     scope === "store" || scope === "hermes"
       ? []
-      : market.filter((item) => marketCategory === "all" || item.category === marketCategory);
+      : market.filter(
+          (item) =>
+            (marketCategory === "all" || item.category === marketCategory) &&
+            (!sharedOnly || item.market === "both")
+        );
   const showInstalled = scope !== "market";
   const showMarket = scope === "all" || scope === "market";
   const marketLabel =
@@ -198,18 +205,9 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
     }
   };
 
-  const install = async (item: CatalogItem, target?: string) => {
-    setBusy(item.id);
-    try {
-      const next = await api.installMarket(item.slug, item.owner, target ?? null, item.market);
-      onState(next);
-      setSelectedItem(null);
-      notify(`${item.name} installed and enabled`);
-    } catch (reason) {
-      onError(String(reason));
-    } finally {
-      setBusy(null);
-    }
+  const install = (item: CatalogItem, target?: string) => {
+    if (jobFor(item)) return;
+    onInstall(item, target ?? null);
   };
 
   const copy = async (text: string) => {
@@ -420,6 +418,18 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
               </button>
             ))}
             <span className="spacer" />
+            <button
+              className="pill"
+              data-active={sharedOnly}
+              aria-pressed={sharedOnly}
+              title="Only skills listed on both marketplaces"
+              onClick={() => setSharedOnly((value) => !value)}
+            >
+              Both sources
+              <span className="pill-count">
+                {market.filter((item) => item.market === "both").length}
+              </span>
+            </button>
             <select
               className="pill select"
               value={marketSort}
@@ -450,7 +460,9 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
             </div>
           ) : (
             <div className="market-grid">
-              {sortedMarket.map((item, index) => (
+              {sortedMarket.map((item, index) => {
+                const job = jobFor(item);
+                return (
                 <article
                   className="mcard"
                   key={item.id}
@@ -489,7 +501,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                       }
                       title={item.installable ? "Install" : item.command ?? "Copy"}
                     >
-                      {busy === item.id ? (
+                      {job ? (
                         Icon.Spinner
                       ) : item.installable ? (
                         installedSlugs.has(item.slug) ? Icon.Check : Icon.Plus
@@ -521,8 +533,21 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                     )}
                     {!item.installable && <span className="chip">Plugin</span>}
                   </div>
+                  {job && (
+                    <div
+                      className="mcard-progress"
+                      role="progressbar"
+                      aria-label={`Installing ${item.name}`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={job.percent}
+                    >
+                      <span style={{ width: `${job.percent}%` }} />
+                    </div>
+                  )}
                 </article>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -543,7 +568,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
           <MarketDetail
             item={selectedItem}
             state={state}
-            busy={busy === selectedItem.id}
+            job={jobFor(selectedItem)}
             onInstall={install}
             onError={onError}
           />
@@ -842,13 +867,13 @@ function LocalDetail({
 function MarketDetail({
   item,
   state,
-  busy,
+  job,
   onInstall,
   onError
 }: {
   item: CatalogItem;
   state: AppState;
-  busy: boolean;
+  job?: InstallJob;
   onInstall: (item: CatalogItem, category?: string) => void;
   onError: (message: string) => void;
 }) {
@@ -943,10 +968,30 @@ function MarketDetail({
           </section>
 
           <div className="sheet-actions">
-            <button className="primary" disabled={busy} onClick={() => onInstall(item, category)}>
-              {busy ? Icon.Spinner : Icon.Plus} Install skill
+            <button
+              className="primary"
+              disabled={Boolean(job)}
+              onClick={() => onInstall(item, category)}
+            >
+              {job ? Icon.Spinner : Icon.Plus}
+              {job ? `Installing ${job.percent}%` : "Install skill"}
             </button>
           </div>
+          {job && (
+            <div className="install-status" aria-live="polite">
+              <div
+                className="install-bar"
+                role="progressbar"
+                aria-label={`Installing ${item.name}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={job.percent}
+              >
+                <span style={{ width: `${job.percent}%` }} />
+              </div>
+              <span className="install-phase">{job.phase}</span>
+            </div>
+          )}
         </>
       ) : (
         <div className="sheet-actions">

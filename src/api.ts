@@ -39,12 +39,12 @@ export const api = {
   previewMarket: (slug: string, owner: string | null, market: MarketSource) =>
     invoke<string>("preview_market", { slug, owner, market }),
 
-  installMarket: (
+  startInstall: (
     slug: string,
     owner: string | null,
     category: string | null,
     market: MarketSource
-  ) => invoke<AppState>("install_market", { slug, owner, category, market }),
+  ) => invoke<string>("install_market", { slug, owner, category, market }),
 
   openUrl: (url: string) => invoke<void>("open_url", { url }),
 

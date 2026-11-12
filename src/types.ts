@@ -46,6 +46,14 @@ export type AppState = {
 
 export type MarketSource = "clawhub" | "agentic" | "both";
 
+export type InstallJob = {
+  id: string;
+  slug: string;
+  name: string;
+  phase: string;
+  percent: number;
+};
+
 export type CatalogItem = {
   id: string;
   kind: "skill" | "plugin" | "bundle";

@@ -713,6 +713,172 @@ select.pill {
   padding-top: 2px;
 }
 
+.mcard-progress {
+  position: absolute;
+  right: 8px;
+  bottom: 3px;
+  left: 8px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.mcard-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 240ms ease;
+}
+
+.install-dock {
+  position: fixed;
+  bottom: 18px;
+  left: 18px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(300px, calc(100vw - 36px));
+}
+
+.install-job {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-2);
+  box-shadow: 0 20px 44px -28px rgba(0, 0, 0, 0.9);
+  animation: fade-up 220ms cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+
+.install-job-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.install-job-name {
+  overflow: hidden;
+  flex: 1;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.install-job-pct {
+  color: var(--accent);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.install-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.install-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 240ms ease;
+}
+
+.install-phase {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.install-status {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  animation: fade-up 240ms cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+
+.update-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.update-copy strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.update-note {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-bar {
+  flex: 1;
+  min-width: 80px;
+  max-width: 220px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.update-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 240ms ease;
+}
+
+.update-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.update-status {
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+@media (max-width: 760px) {
+  .update-banner {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .update-bar {
+    order: 3;
+    max-width: none;
+    flex-basis: 100%;
+  }
+}
+
 .mcard-owner {
   overflow: hidden;
   max-width: 46%;

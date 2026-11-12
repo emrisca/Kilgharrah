@@ -4,6 +4,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
+use tauri::Emitter;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -1336,20 +1337,63 @@ fn preview_market(
     Ok(text.chars().take(PREVIEW_CHARS).collect())
 }
 
+#[derive(Clone, Serialize)]
+struct InstallProgress {
+    id: String,
+    phase: String,
+    percent: u8,
+}
+
+/// Installs run on their own thread so the window stays usable. Progress and
+/// the finished state come back as events keyed by the returned job id.
 #[tauri::command]
 fn install_market(
+    app: tauri::AppHandle,
     slug: String,
     owner: Option<String>,
     category: Option<String>,
     market: Option<String>,
-) -> Result<AppState, String> {
-    ensure_store()?;
+) -> Result<String, String> {
     if !safe_segment(&slug) {
         return Err("That skill name is not valid.".into());
     }
+    let id = format!("install:{slug}");
+    let task_id = id.clone();
+    std::thread::spawn(move || {
+        let progress = |percent: u8, phase: &str| {
+            let _ = app.emit(
+                "install-progress",
+                InstallProgress {
+                    id: task_id.clone(),
+                    phase: phase.to_string(),
+                    percent,
+                },
+            );
+        };
+        match install_market_task(&slug, owner, category, market, &progress) {
+            Ok(state) => {
+                let _ = app.emit("install-finished", json!({ "id": task_id, "state": state }));
+            }
+            Err(error) => {
+                let _ = app.emit("install-failed", json!({ "id": task_id, "error": error }));
+            }
+        }
+    });
+    Ok(id)
+}
+
+fn install_market_task(
+    slug: &str,
+    owner: Option<String>,
+    category: Option<String>,
+    market: Option<String>,
+    progress: &dyn Fn(u8, &str),
+) -> Result<AppState, String> {
+    ensure_store()?;
     if market.as_deref() == Some("agentic") {
-        return install_agentic(&slug, category);
+        return install_agentic(slug, category, progress);
     }
+    progress(6, "Reading the skill");
     let owner = owner.unwrap_or_default().trim().to_string();
     let owner_query = if owner.is_empty() {
         String::new()
@@ -1361,7 +1405,7 @@ fn install_market(
     } else {
         format!("&owner={}", encode(&owner))
     };
-    let meta = get_json(&format!("{BASE}/api/v1/skills/{}{owner_query}", encode(&slug)))?;
+    let meta = get_json(&format!("{BASE}/api/v1/skills/{}{owner_query}", encode(slug)))?;
     let version = meta
         .get("latestVersion")
         .and_then(|v| v.get("version"))
@@ -1381,25 +1425,28 @@ fn install_market(
     if files.len() > MAX_FILES {
         return Err("That skill has too many files for Kilgharrah to install.".into());
     }
+    let file_count = files.len().max(1) as u8;
     let chosen = match category {
         Some(id) if safe_segment(&id) && skills_store().join(&id).is_dir() => id,
         _ => suggest_category(&meta),
     };
-    let dir = skills_store().join(&chosen).join(&slug);
+    let dir = skills_store().join(&chosen).join(slug);
     if dir.exists() {
         return Err(format!("{slug} is already installed in {chosen}."));
     }
     fs::create_dir_all(&dir).map_err(|e| format!("Could not create the skill folder: {e}"))?;
 
     let mut total: u64 = 0;
-    for file in files {
+    for (index, file) in files.iter().enumerate() {
         let Some(relative) = file.get("path").and_then(|v| v.as_str()).and_then(safe_relative) else {
             let _ = fs::remove_dir_all(&dir);
             return Err("ClawHub listed a file path Kilgharrah will not write.".into());
         };
+        let percent = 14 + ((index as u8 + 1) * 68 / file_count).min(68);
+        progress(percent, "Fetching skill files");
         let url = format!(
             "{BASE}/api/v1/skills/{}/file?path={}&version={}{owner_suffix}",
-            encode(&slug),
+            encode(slug),
             encode(&relative.to_string_lossy()),
             encode(&version)
         );
@@ -1424,11 +1471,14 @@ fn install_market(
             return Err(format!("Could not write a skill file: {error}"));
         }
     }
-    if let Err(error) = link_skill(&slug, &dir) {
+    progress(92, "Linking the skill");
+    if let Err(error) = link_skill(slug, &dir) {
         let _ = fs::remove_dir_all(&dir);
         return Err(error);
     }
-    build_state()
+    let state = build_state()?;
+    progress(100, "Installed");
+    Ok(state)
 }
 
 fn collect_github(
@@ -1438,6 +1488,7 @@ fn collect_github(
     dir: &Path,
     total: &mut u64,
     files: &mut usize,
+    progress: &dyn Fn(u8, &str),
 ) -> Result<(), String> {
     let url = format!(
         "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
@@ -1458,7 +1509,7 @@ fn collect_github(
             .unwrap_or_default()
             .to_string();
         if kind == "dir" {
-            collect_github(source, &child, base, dir, total, files)?;
+            collect_github(source, &child, base, dir, total, files, progress)?;
             continue;
         }
         if kind != "file" {
@@ -1474,6 +1525,8 @@ fn collect_github(
         if *files > MAX_FILES {
             return Err("That skill has too many files for Kilgharrah to install.".into());
         }
+        let percent = (22 + *files as u8 * 6).min(88);
+        progress(percent, &format!("Fetching files ({})", *files));
         let download = row
             .get("download_url")
             .and_then(|v| v.as_str())
@@ -1498,7 +1551,12 @@ fn collect_github(
     Ok(())
 }
 
-fn install_agentic(slug: &str, category: Option<String>) -> Result<AppState, String> {
+fn install_agentic(
+    slug: &str,
+    category: Option<String>,
+    progress: &dyn Fn(u8, &str),
+) -> Result<AppState, String> {
+    progress(8, "Finding the GitHub source");
     let source = agentic_source(slug)?;
     let chosen = match category {
         Some(id) if safe_segment(&id) && skills_store().join(&id).is_dir() => id,
@@ -1512,7 +1570,7 @@ fn install_agentic(slug: &str, category: Option<String>) -> Result<AppState, Str
     let base = source.path.clone();
     let mut total = 0u64;
     let mut files = 0usize;
-    if let Err(error) = collect_github(&source, &base, &base, &dir, &mut total, &mut files) {
+    if let Err(error) = collect_github(&source, &base, &base, &dir, &mut total, &mut files, progress) {
         let _ = fs::remove_dir_all(&dir);
         return Err(error);
     }
@@ -1520,11 +1578,14 @@ fn install_agentic(slug: &str, category: Option<String>) -> Result<AppState, Str
         let _ = fs::remove_dir_all(&dir);
         return Err("That skill has no files to install.".into());
     }
+    progress(94, "Linking the skill");
     if let Err(error) = link_skill(slug, &dir) {
         let _ = fs::remove_dir_all(&dir);
         return Err(error);
     }
-    build_state()
+    let state = build_state()?;
+    progress(100, "Installed");
+    Ok(state)
 }
 
 fn skill_dir(source: &str, category: &str, slug: &str) -> Result<PathBuf, String> {
@@ -1675,6 +1736,8 @@ fn main() {
     let _ = ensure_store();
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             add_skill,

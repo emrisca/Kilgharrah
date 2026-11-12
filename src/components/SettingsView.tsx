@@ -4,9 +4,10 @@ import type { AppState } from "../types";
 import { Icon } from "./Icons";
 
 import type { Palette } from "../App";
+import type { UpdateView } from "../updater";
 
 type Theme = "dark" | "light";
-type Panel = "general" | "credits";
+type Panel = "general" | "updates" | "credits";
 
 const VERSION = "0.1.0";
 
@@ -26,6 +27,9 @@ type Props = {
   onPalette: (palette: Palette) => void;
   notify: (message: string) => void;
   onError: (message: string) => void;
+  update: UpdateView;
+  onCheckUpdates: () => void;
+  onInstallUpdate: () => void;
 };
 
 export function SettingsView({
@@ -35,7 +39,10 @@ export function SettingsView({
   palette,
   onPalette,
   notify,
-  onError
+  onError,
+  update,
+  onCheckUpdates,
+  onInstallUpdate
 }: Props) {
   const [panel, setPanel] = useState<Panel>("general");
 
@@ -59,6 +66,9 @@ export function SettingsView({
         <div className="segmented" role="tablist" aria-label="Settings section">
           <button data-active={panel === "general"} onClick={() => setPanel("general")}>
             General
+          </button>
+          <button data-active={panel === "updates"} onClick={() => setPanel("updates")}>
+            Updates
           </button>
           <button data-active={panel === "credits"} onClick={() => setPanel("credits")}>
             Credits
@@ -149,6 +159,55 @@ export function SettingsView({
             </div>
           </section>
         </>
+      ) : panel === "updates" ? (
+        <>
+          <section className="panel">
+            <div className="panel-head">
+              <h3>App updates</h3>
+              <p>
+                Kilgharrah checks GitHub for a signed build and installs it over the current one.
+                The check runs in the background every few hours.
+              </p>
+            </div>
+            <div className="facts">
+              <Fact label="Installed" value={VERSION} />
+              <Fact label="Channel" value="Stable" />
+              <Fact
+                label="Available"
+                value={
+                  update.status === "available" || update.status === "downloading"
+                    ? update.version ?? "Unknown"
+                    : "None found"
+                }
+              />
+            </div>
+            <div className="update-status">
+              <span>{updateLabel(update)}</span>
+            </div>
+            {(update.status === "downloading" || update.status === "ready") && (
+              <div
+                className="install-bar"
+                role="progressbar"
+                aria-label="Downloading update"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={update.percent}
+              >
+                <span style={{ width: `${update.percent}%` }} />
+              </div>
+            )}
+            <div className="filters">
+              <button className="ghost-btn" disabled={update.status === "checking"} onClick={onCheckUpdates}>
+                {Icon.Refresh} {update.status === "checking" ? "Checking" : "Check for updates"}
+              </button>
+              {update.status === "available" && (
+                <button className="primary compact" onClick={onInstallUpdate}>
+                  {Icon.Download} Install {update.version}
+                </button>
+              )}
+            </div>
+          </section>
+        </>
       ) : (
         <>
           <section className="panel">
@@ -227,6 +286,23 @@ export function SettingsView({
       )}
     </div>
   );
+}
+
+function updateLabel(update: UpdateView): string {
+  switch (update.status) {
+    case "checking":
+      return "Checking GitHub for a new build.";
+    case "available":
+      return `Version ${update.version} is ready to install.`;
+    case "downloading":
+      return `Downloading, ${update.percent}%.`;
+    case "ready":
+      return "Downloaded. Restarting to finish.";
+    case "error":
+      return update.message ?? "The update check failed.";
+    default:
+      return update.message ?? "No update check has run yet.";
+  }
 }
 
 function Fact({ label, value, mono }: { label: string; value: string; mono?: boolean }) {

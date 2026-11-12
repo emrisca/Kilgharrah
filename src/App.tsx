@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
-import type { AppState } from "./types";
+import type { AppState, CatalogItem, InstallJob } from "./types";
 import { SkillsView } from "./components/SkillsView";
 import { McpView } from "./components/McpView";
 import { SettingsView } from "./components/SettingsView";
 import { Icon } from "./components/Icons";
+import { useUpdater } from "./updater";
 
 type Theme = "dark" | "light";
 export type Palette = "aurora" | "ember" | "tide" | "orchid" | "rose";
@@ -18,6 +20,9 @@ export default function App() {
   const [tab, setTab] = useState<"skills" | "mcp" | "settings">("skills");
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [installs, setInstalls] = useState<InstallJob[]>([]);
+  const installNames = useRef(new Map<string, string>());
+  const update = useUpdater();
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem(THEME_KEY);
     if (saved === "dark" || saved === "light") return saved;
@@ -63,6 +68,62 @@ export default function App() {
     void load();
   }, [load]);
 
+  // Installs run on a Rust worker and report back by job id, so switching
+  // sections or closing the sheet never stops them.
+  useEffect(() => {
+    const stops: Array<() => void> = [];
+    const keep = (stop: () => void) => stops.push(stop);
+
+    void listen<{ id: string; phase: string; percent: number }>("install-progress", (event) => {
+      const { id, phase, percent } = event.payload;
+      setInstalls((rows) =>
+        rows.map((row) => (row.id === id ? { ...row, phase, percent } : row))
+      );
+    }).then(keep);
+
+    void listen<{ id: string; state: AppState }>("install-finished", (event) => {
+      const { id, state: next } = event.payload;
+      const name = installNames.current.get(id) ?? "Skill";
+      installNames.current.delete(id);
+      setState(next);
+      setToast(`${name} installed and enabled`);
+      setInstalls((rows) =>
+        rows.map((row) => (row.id === id ? { ...row, phase: "Installed", percent: 100 } : row))
+      );
+      window.setTimeout(() => {
+        setInstalls((rows) => rows.filter((row) => row.id !== id));
+      }, 1600);
+    }).then(keep);
+
+    void listen<{ id: string; error: string }>("install-failed", (event) => {
+      installNames.current.delete(event.payload.id);
+      setError(event.payload.error);
+      setInstalls((rows) => rows.filter((row) => row.id !== event.payload.id));
+    }).then(keep);
+
+    return () => stops.forEach((stop) => stop());
+  }, []);
+
+  const startInstall = useCallback(async (item: CatalogItem, target: string | null) => {
+    const id = `install:${item.slug}`;
+    installNames.current.set(id, item.name);
+    setInstalls((rows) =>
+      rows.some((row) => row.id === id)
+        ? rows
+        : [
+            ...rows,
+            { id, slug: item.slug, name: item.name, phase: "Starting", percent: 2 }
+          ]
+    );
+    try {
+      await api.startInstall(item.slug, item.owner, target, item.market);
+    } catch (reason) {
+      installNames.current.delete(id);
+      setInstalls((rows) => rows.filter((row) => row.id !== id));
+      setError(String(reason));
+    }
+  }, []);
+
   const enabled = state?.skills.filter((skill) => skill.enabled).length ?? 0;
 
   return (
@@ -105,6 +166,41 @@ export default function App() {
         </div>
       </header>
 
+      {update.view.status === "available" || update.view.status === "downloading" ? (
+        <div className="update-banner" role="status">
+          <div className="update-copy">
+            <strong>Kilgharrah {update.view.version} is ready</strong>
+            <span className="update-note">
+              {update.view.status === "downloading"
+                ? `Downloading the update, ${update.view.percent}%`
+                : "A new signed build is available. Install it now or keep working."}
+            </span>
+          </div>
+          {update.view.status === "downloading" && (
+            <div
+              className="update-bar"
+              role="progressbar"
+              aria-label="Downloading update"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={update.view.percent}
+            >
+              <span style={{ width: `${update.view.percent}%` }} />
+            </div>
+          )}
+          <div className="update-actions">
+            {update.view.status === "available" && (
+              <button className="primary compact" onClick={() => void update.install()}>
+                {Icon.Download} Install and restart
+              </button>
+            )}
+            <button className="ghost-btn" onClick={update.dismiss}>
+              Later
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <main className="page">
         {state === null ? (
           <Loading />
@@ -114,6 +210,8 @@ export default function App() {
             onState={setState}
             notify={setToast}
             onError={(message) => setError(message)}
+            installs={installs}
+            onInstall={startInstall}
           />
         ) : tab === "mcp" ? (
           <McpView
@@ -131,9 +229,36 @@ export default function App() {
             onPalette={setPalette}
             notify={setToast}
             onError={(message) => setError(message)}
+            update={update.view}
+            onCheckUpdates={() => void update.checkNow(false)}
+            onInstallUpdate={() => void update.install()}
           />
         )}
       </main>
+
+      {installs.length > 0 && (
+        <div className="install-dock" aria-live="polite">
+          {installs.map((job) => (
+            <div className="install-job" key={job.id}>
+              <div className="install-job-head">
+                <span className="install-job-name">{job.name}</span>
+                <span className="install-job-pct">{job.percent}%</span>
+              </div>
+              <div
+                className="install-bar"
+                role="progressbar"
+                aria-label={`Installing ${job.name}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={job.percent}
+              >
+                <span style={{ width: `${job.percent}%` }} />
+              </div>
+              <span className="install-phase">{job.phase}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {toast && <div className="toast">{toast}</div>}
       {error && (

@@ -23,9 +23,18 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDQkFBOEU1QUQ5QkUzOUIKUldTYjQ1dXQ1YWk2WENFRUM4WTJjVEVUT1ZieVF0eXFYR0FoZDFTZm1kd1B2czR1SkxLMVJ1Nm4K",
+      "endpoints": [
+        "https://github.com/emrisca/Kilgharrah/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "category": "DeveloperTool",
     "shortDescription": "Skills and MCP manager for the Freebuff CLI",
     "icon": [

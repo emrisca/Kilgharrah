@@ -9,3 +9,5 @@ src-tauri/gen/schemas/
 
 # Python bytecode
 __pycache__/
+
+.secrets/
