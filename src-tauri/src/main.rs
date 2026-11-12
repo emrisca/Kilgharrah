@@ -1252,6 +1252,7 @@ fn reveal_store() -> Result<(), String> {
 fn main() {
     let _ = ensure_store();
     tauri::Builder::default()
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             add_skill,
