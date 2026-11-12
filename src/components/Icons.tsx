@@ -130,5 +130,10 @@ export const Icon = {
       <path d="M8 2.4v7.4M5.3 7.2 8 9.9l2.7-2.7" />
       <path d="M3 12.6h10" />
     </svg>
+  ),
+  ChevronRight: (
+    <svg {...base} width={11} height={11} viewBox="0 0 16 16">
+      <path d="m6 3.4 4.6 4.6L6 12.6" />
+    </svg>
   )
 };

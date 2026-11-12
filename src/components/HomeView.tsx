@@ -32,13 +32,13 @@ export function HomeView({ state, onOpen }: Props) {
 
   const art = FRAMES[frame];
   const enabled = state.skills.filter((skill) => skill.enabled).length;
-  const stored = state.skills.filter((skill) => skill.source === "store").length;
+  const installed = state.skills.length;
 
   return (
     <div className="home">
       <div className="home-hero">
         <div className="home-copy">
-          <span className="home-eyebrow">Skills and MCP for the Freebuff CLI</span>
+          <span className="home-eyebrow">Skills and MCP for your CLI</span>
 
           <h1 className="home-word">Kilgharrah</h1>
 
@@ -49,8 +49,9 @@ export function HomeView({ state, onOpen }: Props) {
           </div>
 
           <p className="home-lead">
-            A local hoard for the skills your CLI loads. Summon them from the marketplace or write
-            your own. Everything sits in a category, and switching one off leaves the file alone.
+            Kilgharrah keeps the skills and MCP servers for your CLI. Add skills from the
+            marketplace or write your own. Link them to one agent or several. Switch a skill off
+            and its files stay on disk.
           </p>
 
           <div className="home-actions">
@@ -72,8 +73,8 @@ export function HomeView({ state, onOpen }: Props) {
               <dd>{state.servers.length}</dd>
             </div>
             <div>
-              <dt>In the store</dt>
-              <dd>{stored}</dd>
+              <dt>Installed</dt>
+              <dd>{installed}</dd>
             </div>
           </dl>
         </div>

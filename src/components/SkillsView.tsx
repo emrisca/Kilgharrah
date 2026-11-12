@@ -5,7 +5,7 @@ import { Icon } from "./Icons";
 import { Markdown } from "./Markdown";
 import { Sheet } from "./Sheet";
 
-type Scope = "all" | "store" | "hermes" | "market";
+type Scope = "all" | "installed" | "market";
 type MarketSort = "popular" | "rank" | "stars" | "downloads";
 
 const MARKET_NAMES: Record<string, string> = {
@@ -71,7 +71,7 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
   }, []);
 
   useEffect(() => {
-    if (scope === "store" || scope === "hermes") return;
+    if (scope === "installed") return;
     const trimmed = query.trim();
     if (trimmed.length === 1) return;
     const cached = marketCache.current.get(trimmed);
@@ -129,11 +129,8 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
     };
   }, [query, scope, nonce]);
 
-  const storeSkills = state.skills.filter((skill) => skill.source === "store");
-  const hermesCount = state.skills.length - storeSkills.length;
-  const categoryOptions = state.categories.filter((entry) =>
-    scope === "store" ? entry.source === "store" : scope === "hermes" ? entry.source === "hermes" : true
-  );
+  const installed = state.skills;
+  const categoryOptions = state.categories;
 
   useEffect(() => {
     setCategory("all");
@@ -142,8 +139,6 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
   const skills = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return state.skills.filter((skill) => {
-      if (scope === "store" && skill.source !== "store") return false;
-      if (scope === "hermes" && skill.source !== "hermes") return false;
       if (category !== "all" && skill.category !== category) return false;
       if (!needle) return true;
       return `${skill.name} ${skill.slug} ${skill.description}`.toLowerCase().includes(needle);
@@ -154,7 +149,7 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
     .map((entry) => ({ entry, skills: skills.filter((skill) => skill.category === entry.id) }))
     .filter((group) => group.skills.length > 0);
 
-  const installedSlugs = new Set(storeSkills.map((skill) => skill.slug));
+  const installedSlugs = new Set(installed.map((skill) => skill.slug));
 
   const marketCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -166,7 +161,7 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
 
   const jobFor = (item: CatalogItem) => installs.find((job) => job.slug === item.slug);
   const visibleMarket =
-    scope === "store" || scope === "hermes"
+    scope === "installed"
       ? []
       : market.filter(
           (item) =>
@@ -237,7 +232,7 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
 
   const eyebrow = selected
     ? `${state.categories.find((entry) => entry.id === selected.category)?.name ?? selected.category} · ${
-        selected.source === "hermes" ? "Hermes" : "local"
+        selected.profile ?? "local"
       }`
     : selectedItem
       ? `Marketplace · ${selectedItem.kind}`
@@ -254,7 +249,7 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
             ref={searchRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search the store, Hermes and the marketplace"
+            placeholder="Search installed skills and the marketplace"
             spellCheck={false}
             aria-label="Search skills"
           />
@@ -272,37 +267,48 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
       </div>
 
       <div className="filters">
-        <select
-          className="pill select"
-          value={category}
-          onChange={(event) => setCategory(event.target.value)}
-          aria-label="Filter by category"
-        >
-          <option value="all">All categories</option>
+        <div className="category-row" role="tablist" aria-label="Filter by category">
+          <button
+            className="pill"
+            role="tab"
+            aria-selected={category === "all"}
+            data-active={category === "all"}
+            onClick={() => setCategory("all")}
+          >
+            All categories
+            <span className="pill-count">{state.skills.length}</span>
+          </button>
           {categoryOptions.map((entry) => (
-            <option key={entry.id} value={entry.id}>
-              {entry.name} ({entry.count})
-            </option>
+            <button
+              key={entry.id}
+              className="pill"
+              role="tab"
+              aria-selected={category === entry.id}
+              data-active={category === entry.id}
+              onClick={() => setCategory(entry.id)}
+            >
+              {entry.name}
+              <span className="pill-count">{entry.count}</span>
+            </button>
           ))}
-        </select>
+        </div>
+      </div>
 
+      <div className="filters">
         <div className="segmented" role="group" aria-label="Source">
-          {(["all", "store", "hermes", "market"] as Scope[]).map((value) => (
+          {(["all", "installed", "market"] as Scope[]).map((value) => (
             <button key={value} data-active={scope === value} onClick={() => setScope(value)}>
               {value === "all"
                 ? "All"
-                : value === "market"
-                  ? "Marketplace"
-                  : value === "store"
-                    ? "Store"
-                    : "Hermes"}
+                : value === "installed"
+                  ? "Installed"
+                  : "Marketplace"}
             </button>
           ))}
         </div>
 
         <span className="filter-note">
-          {storeSkills.filter((skill) => skill.enabled).length} enabled of {storeSkills.length} in the
-          store · {hermesCount} in Hermes
+          {installed.filter((skill) => skill.enabled).length} enabled of {installed.length} installed
         </span>
         <span className="spacer" />
         {showMarket && (
@@ -359,8 +365,7 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
                 >
                   <div className="card-top">
                     <span className="eyebrow">
-                      {entry.name} ·{" "}
-                      {skill.source === "hermes" ? "Hermes" : skill.enabled ? "on" : "off"}
+                      {entry.name} · {skill.profile ?? (skill.enabled ? "on" : "off")}
                     </span>
                   </div>
                   <h3>{skill.name}</h3>
@@ -369,25 +374,27 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
                     <span className="chip">
                       {skill.files} file{skill.files === 1 ? "" : "s"}
                     </span>
+                    {skill.version && <span className="chip ghost">v{skill.version}</span>}
+                    {skill.modified && (
+                      <span className="chip" title="The files changed after they were installed.">
+                        modified
+                      </span>
+                    )}
                     <span className="chip ghost">{relativeTime(skill.updatedAt)}</span>
                     <span className="spacer" />
-                    {skill.source === "store" ? (
-                      <span
-                        className="switch"
-                        data-on={skill.enabled}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={skill.enabled}
-                          onChange={() => void toggle(skill)}
-                          aria-label={`${skill.name} enabled`}
-                        />
-                        <span />
-                      </span>
-                    ) : (
-                      <span className="chip">Read-only</span>
-                    )}
+                    <span
+                      className="switch"
+                      data-on={skill.enabled}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={skill.enabled}
+                        onChange={() => void toggle(skill)}
+                        aria-label={`${skill.name} enabled`}
+                      />
+                      <span />
+                    </span>
                   </div>
                 </article>
               ))}
@@ -621,10 +628,10 @@ function LocalDetail({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [target, setTarget] = useState("other");
-  const [importing, setImporting] = useState(false);
-  const readOnly = skill.source === "hermes";
-  const storeCategories = state.categories.filter((entry) => entry.source === "store");
+  const [owner, setOwner] = useState("");
+  const [savingSource, setSavingSource] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const categories = state.categories;
   const categoryName =
     state.categories.find((entry) => entry.id === skill.category)?.name ?? skill.category;
 
@@ -710,16 +717,29 @@ function LocalDetail({
     }
   };
 
-  const importCopy = async () => {
-    setImporting(true);
+  const update = async () => {
+    setUpdating(true);
     try {
-      onState(await api.importHermes(skill.category, skill.slug, target));
-      notify(`${skill.name} imported into ${target}`);
+      onState(await api.updateSkill(skill.category, skill.slug));
+      notify(`${skill.name} updated`);
       onClose();
     } catch (reason) {
       onError(String(reason));
     } finally {
-      setImporting(false);
+      setUpdating(false);
+    }
+  };
+
+  const saveSource = async () => {
+    if (savingSource) return;
+    setSavingSource(true);
+    try {
+      onState(await api.setSkillSource(skill.category, skill.slug, owner));
+      notify(owner.trim() ? `Source set to ${owner.trim()}` : "Source cleared");
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setSavingSource(false);
     }
   };
 
@@ -728,14 +748,27 @@ function LocalDetail({
       <p className="sheet-lead">{skill.description || "No description yet."}</p>
 
       <div className="facts">
-        <Fact label="Source" value={readOnly ? "Hermes library" : "Kilgharrah store"} />
-        <Fact
-          label="Status"
-          value={readOnly ? "Read-only" : skill.enabled ? "Linked for the CLI" : "Not linked"}
-        />
+        <Fact label="Library" value={skill.profile ? `${skill.profile} profile` : "Kilgharrah library"} />
+        <Fact label="Status" value={skill.enabled ? "Linked for the CLI" : "Not linked"} />
         <Fact label="Category" value={categoryName} />
         <Fact label="Slug" value={skill.slug} mono />
         <Fact label="Files" value={`${skill.files} file${skill.files === 1 ? "" : "s"}`} />
+        <Fact label="Version" value={skill.version ? `v${skill.version}` : "not recorded"} />
+        <Fact label="From" value={ORIGIN_NAMES[skill.origin] ?? skill.origin} />
+        <Fact
+          label="Trust"
+          value={
+            skill.origin === "unknown"
+              ? "No record yet"
+              : skill.modified
+                ? "Changed since install"
+                : "Matches install record"
+          }
+        />
+        <Fact
+          label="Scripts"
+          value={skill.scripts ? `${skill.scripts} file${skill.scripts === 1 ? "" : "s"}` : "none"}
+        />
         <Fact label="Updated" value={relativeTime(skill.updatedAt)} />
         <Fact label="Folder" value={skill.path} mono wide />
       </div>
@@ -749,8 +782,7 @@ function LocalDetail({
             </button>
             <button
               data-active={mode === "edit"}
-              disabled={readOnly}
-              title={readOnly ? "Import the skill to edit it" : "Edit this file"}
+              title="Edit this file"
               onClick={() => setMode("edit")}
             >
               {Icon.Edit} Edit
@@ -816,40 +848,40 @@ function LocalDetail({
         )}
       </section>
 
-      {readOnly ? (
+      <section className="sheet-section">
+        <span className="sheet-label">Move to category</span>
+        <select className="input" value={skill.category} onChange={(event) => void move(event.target.value)}>
+          {categories.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.name}
+            </option>
+          ))}
+        </select>
+      </section>
+
+      {skill.origin === "unknown" && (
         <section className="sheet-section">
-          <span className="sheet-label">Import into the store</span>
+          <span className="sheet-label">Fix the source</span>
           <p className="sheet-note">
-            Hermes keeps and regenerates its own copy. Import the skill to edit it, link it for the
-            CLI, and keep your changes.
+            Kilgharrah has no install record for this skill. Enter the ClawHub owner to check it for
+            updates, or clear the field to mark it as your own.
           </p>
           <div className="import-row">
-            <select className="input" value={target} onChange={(event) => setTarget(event.target.value)}>
-              {storeCategories.map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.name}
-                </option>
-              ))}
-            </select>
+            <input
+              className="input mono"
+              value={owner}
+              onChange={(event) => setOwner(event.target.value)}
+              placeholder="owner"
+              spellCheck={false}
+            />
             <button
               className="primary compact"
-              disabled={importing}
-              onClick={() => void importCopy()}
+              disabled={savingSource}
+              onClick={() => void saveSource()}
             >
-              {importing ? Icon.Spinner : Icon.Import} Import
+              {savingSource ? Icon.Spinner : Icon.Check} Save
             </button>
           </div>
-        </section>
-      ) : (
-        <section className="sheet-section">
-          <span className="sheet-label">Move to category</span>
-          <select className="input" value={skill.category} onChange={(event) => void move(event.target.value)}>
-            {storeCategories.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.name}
-              </option>
-            ))}
-          </select>
         </section>
       )}
 
@@ -858,17 +890,20 @@ function LocalDetail({
           className="ghost-btn"
           onClick={() => api.revealStore().catch((reason) => onError(String(reason)))}
         >
-          {Icon.Folder} Show store
+          {Icon.Folder} Show library
         </button>
         <span className="spacer" />
-        {!readOnly && (
-          <button
-            className="ghost-btn danger"
-            onClick={() => (confirming ? void remove() : setConfirming(true))}
-          >
-            {Icon.Trash} {confirming ? "Confirm remove" : "Remove"}
+        {skill.origin === "clawhub" && (
+          <button className="ghost-btn" disabled={updating} onClick={() => void update()}>
+            {updating ? Icon.Spinner : Icon.Refresh} {updating ? "Updating" : "Update"}
           </button>
         )}
+        <button
+          className="ghost-btn danger"
+          onClick={() => (confirming ? void remove() : setConfirming(true))}
+        >
+          {Icon.Trash} {confirming ? "Confirm remove" : "Remove"}
+        </button>
       </div>
     </>
   );
@@ -1124,7 +1159,7 @@ function ComposeDialog({
         </div>
 
         <div className="dialog-actions">
-          <span className="sheet-note">Saved to the store and linked for the CLI.</span>
+          <span className="sheet-note">Saved to the library and linked for the CLI.</span>
           <span className="spacer" />
           <button className="ghost-btn" onClick={onClose}>
             Cancel
@@ -1158,6 +1193,15 @@ function Fact({
     </div>
   );
 }
+
+const ORIGIN_NAMES: Record<string, string> = {
+  local: "Made here",
+  clawhub: "ClawHub",
+  agentic: "AgenticSkills",
+  profile: "Imported profile",
+  hermes: "Hermes",
+  unknown: "Not recorded"
+};
 
 function formatCount(value: number) {
   if (value >= 1_000_000) {

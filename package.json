@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.1",
   "type": "module",
-  "description": "Skills and MCP manager for the Freebuff CLI",
+  "description": "Skills and MCP manager for CLI agents",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

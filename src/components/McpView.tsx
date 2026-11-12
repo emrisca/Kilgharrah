@@ -95,7 +95,7 @@ export function McpView({ state, onState, notify, onError }: Props) {
         <button
           className="ghost-btn"
           onClick={() => api.revealStore().catch((reason) => onError(String(reason)))}
-          title="Show the store in Finder"
+          title="Show the library in Finder"
         >
           {Icon.Folder}
         </button>
@@ -104,7 +104,7 @@ export function McpView({ state, onState, notify, onError }: Props) {
       <section className="group">
         <header className="group-head">
           <h2>Your servers</h2>
-          <p>Read from the same mcp.json the Freebuff CLI loads</p>
+          <p>Read from the same config your main agent loads, and mirrored to the others</p>
           <span className="count">{servers.length}</span>
         </header>
 

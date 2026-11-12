@@ -3,7 +3,7 @@ export type Category = {
   name: string;
   blurb: string;
   count: number;
-  source: "store" | "hermes";
+  source: string;
 };
 
 export type SkillSource = "store" | "hermes";
@@ -19,11 +19,72 @@ export type Skill = {
   enabled: boolean;
   files: number;
   updatedAt: number;
+  version: string | null;
+  origin: string;
+  installedAt: number;
+  modified: boolean;
+  scripts: number;
+  profile: string | null;
+};
+
+export type AgentTarget = {
+  id: string;
+  name: string;
+  path: string;
+  enabled: boolean;
+  linked: number;
+};
+
+export type SkillUpdate = {
+  category: string;
+  slug: string;
+  name: string;
+  origin: string;
+  current: string | null;
+  latest: string | null;
+  status: "available" | "current" | "unknown" | "error";
+  detail: string;
+};
+
+export type UpdateReport = {
+  state: AppState;
+  updated: number;
+  failed: string[];
+};
+
+export type DiagnosticCheck = {
+  id: string;
+  label: string;
+  status: "ok" | "warn" | "error";
+  detail: string;
+};
+
+export type Diagnostics = {
+  ok: boolean;
+  checks: DiagnosticCheck[];
+  checkedAt: number;
 };
 
 export type SkillFile = {
   path: string;
   bytes: number;
+};
+
+export type SetupView = {
+  onboarded: boolean;
+  scope: "home" | "project";
+  projectRoot: string | null;
+  agent: string;
+  agentName: string;
+  profile: string | null;
+};
+
+export type ProfileInfo = {
+  name: string;
+  path: string | null;
+  skills: number;
+  servers: number;
+  builtin: boolean;
 };
 
 export type McpServer = {
@@ -42,6 +103,9 @@ export type AppState = {
   categories: Category[];
   skills: Skill[];
   servers: McpServer[];
+  agentTargets: AgentTarget[];
+  setup: SetupView;
+  profiles: ProfileInfo[];
 };
 
 export type MarketSource = "clawhub" | "agentic" | "both";

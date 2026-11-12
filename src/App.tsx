@@ -7,6 +7,7 @@ import { HomeView } from "./components/HomeView";
 import { SkillsView } from "./components/SkillsView";
 import { McpView } from "./components/McpView";
 import { SettingsView } from "./components/SettingsView";
+import { SetupOverlay } from "./components/SetupOverlay";
 import { Icon } from "./components/Icons";
 import { useUpdater } from "./updater";
 
@@ -23,6 +24,7 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [installs, setInstalls] = useState<InstallJob[]>([]);
+  const [setupOpen, setSetupOpen] = useState(false);
   const installNames = useRef(new Map<string, string>());
   const update = useUpdater();
   const [theme, setTheme] = useState<Theme>(() => {
@@ -127,6 +129,7 @@ export default function App() {
   }, []);
 
   const enabled = state?.skills.filter((skill) => skill.enabled).length ?? 0;
+  const showSetup = state !== null && (!state.setup.onboarded || setupOpen);
 
   return (
     <div className="app">
@@ -153,12 +156,12 @@ export default function App() {
         <div className="top-actions">
           <button
             className="ghost-btn"
-            title={state?.store ?? "Open the store"}
-            aria-label="Store"
+            title={state?.store ?? "Open the library folder"}
+            aria-label="Library folder"
             onClick={() => api.revealStore().catch((reason) => setError(String(reason)))}
           >
             {Icon.Folder}
-            <span>Store</span>
+            <span>Library</span>
           </button>
           <button
             className="icon-btn"
@@ -230,6 +233,7 @@ export default function App() {
         ) : (
           <SettingsView
             state={state}
+            onState={setState}
             theme={theme}
             onTheme={setTheme}
             palette={palette}
@@ -239,9 +243,19 @@ export default function App() {
             update={update.view}
             onCheckUpdates={() => void update.checkNow(false)}
             onInstallUpdate={() => void update.install()}
+            onOpenSetup={() => setSetupOpen(true)}
           />
         )}
       </main>
+
+      {showSetup && state && (
+        <SetupOverlay
+          state={state}
+          onState={setState}
+          onClose={() => setSetupOpen(false)}
+          onError={(message) => setError(message)}
+        />
+      )}
 
       {installs.length > 0 && (
         <div className="install-dock" aria-live="polite">

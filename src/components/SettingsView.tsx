@@ -1,15 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { api } from "../api";
-import type { AppState } from "../types";
+import type { AppState, Diagnostics, SkillUpdate } from "../types";
 import { Icon } from "./Icons";
 
 import type { Palette } from "../App";
 import type { UpdateView } from "../updater";
 
 type Theme = "dark" | "light";
-type Panel = "general" | "updates" | "credits";
-
-const VERSION = "0.1.0";
+type Panel = "general" | "profiles" | "agents" | "diagnostics" | "updates" | "credits";
 
 const PALETTES: { id: Palette; name: string; note: string }[] = [
   { id: "aurora", name: "Aurora", note: "Green" },
@@ -22,6 +21,7 @@ const PALETTES: { id: Palette; name: string; note: string }[] = [
 
 type Props = {
   state: AppState;
+  onState: (state: AppState) => void;
   theme: Theme;
   onTheme: (theme: Theme) => void;
   palette: Palette;
@@ -31,10 +31,12 @@ type Props = {
   update: UpdateView;
   onCheckUpdates: () => void;
   onInstallUpdate: () => void;
+  onOpenSetup: () => void;
 };
 
 export function SettingsView({
   state,
+  onState,
   theme,
   onTheme,
   palette,
@@ -43,9 +45,151 @@ export function SettingsView({
   onError,
   update,
   onCheckUpdates,
-  onInstallUpdate
+  onInstallUpdate,
+  onOpenSetup
 }: Props) {
   const [panel, setPanel] = useState<Panel>("general");
+  const [version, setVersion] = useState("");
+  const [targets, setTargets] = useState<string[]>(() =>
+    state.agentTargets.filter((target) => target.enabled).map((target) => target.id)
+  );
+  const [savingTargets, setSavingTargets] = useState(false);
+  const [checks, setChecks] = useState<Diagnostics | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [skillUpdates, setSkillUpdates] = useState<SkillUpdate[] | null>(null);
+  const [checkingSkills, setCheckingSkills] = useState(false);
+  const [updatingSlug, setUpdatingSlug] = useState<string | null>(null);
+  const [updatingAll, setUpdatingAll] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [applying, setApplying] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  useEffect(() => {
+    getVersion()
+      .then(setVersion)
+      .catch(() => setVersion(""));
+  }, []);
+
+  const runDiagnostics = async () => {
+    setChecking(true);
+    try {
+      setChecks(await api.diagnostics());
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const runSkillUpdates = async () => {
+    setCheckingSkills(true);
+    try {
+      setSkillUpdates(await api.checkUpdates());
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setCheckingSkills(false);
+    }
+  };
+
+  const updateSkill = async (row: SkillUpdate) => {
+    setUpdatingSlug(row.slug);
+    try {
+      onState(await api.updateSkill(row.category, row.slug));
+      notify(`${row.name} updated`);
+      setSkillUpdates(await api.checkUpdates());
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setUpdatingSlug(null);
+    }
+  };
+
+  const updateAll = async () => {
+    setUpdatingAll(true);
+    try {
+      const report = await api.updateAllSkills();
+      onState(report.state);
+      notify(
+        report.updated === 0
+          ? "No skills needed an update"
+          : `${report.updated} skill${report.updated === 1 ? "" : "s"} updated`
+      );
+      if (report.failed.length > 0) onError(report.failed.join(" · "));
+      setSkillUpdates(await api.checkUpdates());
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setUpdatingAll(false);
+    }
+  };
+
+  const exportProfile = async () => {
+    if (!profileName.trim() || exporting) return;
+    setExporting(true);
+    try {
+      const path = await api.exportProfile(profileName.trim());
+      notify(`Profile saved to ${path}`);
+      setProfileName("");
+      onState(await api.snapshot());
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const applyProfile = async (name: string) => {
+    setApplying(name);
+    try {
+      onState(await api.applyProfile(name));
+      notify(`${name} applied`);
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setApplying(null);
+    }
+  };
+
+  const deleteProfile = async (name: string) => {
+    setDeleting(name);
+    try {
+      onState(await api.deleteProfile(name));
+      notify(`${name} deleted`);
+      setConfirmDelete(null);
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const saveTargets = async () => {
+    setSavingTargets(true);
+    try {
+      onState(await api.setAgentTargets(targets));
+      notify("Agent mirrors saved");
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setSavingTargets(false);
+    }
+  };
+
+  useEffect(() => {
+    if (panel === "diagnostics" && !checks && !checking) void runDiagnostics();
+  }, [panel]);
+
+  const savedTargets = state.agentTargets
+    .filter((target) => target.enabled)
+    .map((target) => target.id);
+  const targetsDirty =
+    [...targets].sort().join(",") !== [...savedTargets].sort().join(",");
+  const pendingUpdates = (skillUpdates ?? []).filter((row) => row.status === "available");
+  const updateErrors = (skillUpdates ?? []).filter((row) => row.status === "error");
+  const unknownUpdates = (skillUpdates ?? []).filter((row) => row.status === "unknown");
 
   const open = (url: string) => api.openUrl(url).catch((reason) => onError(String(reason)));
 
@@ -58,8 +202,7 @@ export function SettingsView({
     }
   };
 
-  const storeSkills = state.skills.filter((skill) => skill.source === "store");
-  const hermesSkills = state.skills.filter((skill) => skill.source === "hermes");
+  const installed = state.skills;
 
   return (
     <div className="view settings">
@@ -67,6 +210,15 @@ export function SettingsView({
         <div className="segmented" role="tablist" aria-label="Settings section">
           <button data-active={panel === "general"} onClick={() => setPanel("general")}>
             General
+          </button>
+          <button data-active={panel === "profiles"} onClick={() => setPanel("profiles")}>
+            Profiles
+          </button>
+          <button data-active={panel === "agents"} onClick={() => setPanel("agents")}>
+            Agents
+          </button>
+          <button data-active={panel === "diagnostics"} onClick={() => setPanel("diagnostics")}>
+            Diagnostics
           </button>
           <button data-active={panel === "updates"} onClick={() => setPanel("updates")}>
             Updates
@@ -76,7 +228,7 @@ export function SettingsView({
           </button>
         </div>
         <span className="spacer" />
-        <span className="filter-note">Kilgharrah {VERSION}</span>
+        <span className="filter-note">Kilgharrah {version || "…"}</span>
       </div>
 
       {panel === "general" ? (
@@ -118,45 +270,253 @@ export function SettingsView({
 
           <section className="panel">
             <div className="panel-head">
-              <h3>Library</h3>
-              <p>Where Kilgharrah reads skills from and how the CLI sees them.</p>
+              <h3>Setup</h3>
+              <p>Where the skills live and which agent loads them.</p>
             </div>
             <div className="facts">
-              <Fact label="Store" value={state.store} mono />
-              <Fact label="CLI links" value={state.skillsRoot} mono />
-              <Fact label="Hermes" value={state.hermesRoot} mono />
+              <Fact label="Agent" value={state.setup.agentName} />
+              <Fact
+                label="Scope"
+                value={state.setup.scope === "project" ? "Project folder" : "Home"}
+              />
+              <Fact
+                label="Project folder"
+                value={state.setup.projectRoot ?? "not set"}
+                mono
+              />
+              <Fact label="Profile" value={state.setup.profile ?? "blank"} />
+              <Fact label="Library" value={state.store} mono />
+              <Fact label="Skills folder" value={state.skillsRoot} mono />
               <Fact label="MCP config" value={state.mcpPath} mono />
             </div>
             <div className="filters">
-              <span className="chip">{storeSkills.length} in the store</span>
-              <span className="chip">{storeSkills.filter((skill) => skill.enabled).length} enabled</span>
-              <span className="chip">{hermesSkills.length} from Hermes</span>
+              <span className="chip">{installed.length} installed</span>
+              <span className="chip">{installed.filter((skill) => skill.enabled).length} enabled</span>
               <span className="chip">{state.servers.length} MCP servers</span>
               <span className="spacer" />
+              <button className="ghost-btn" onClick={onOpenSetup}>
+                {Icon.Settings} Run setup again
+              </button>
               <button
                 className="ghost-btn"
                 onClick={() => api.revealStore().catch((reason) => onError(String(reason)))}
               >
-                {Icon.Folder} Show store
+                {Icon.Folder} Show library
               </button>
+            </div>
+          </section>
+        </>
+      ) : panel === "profiles" ? (
+        <>
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Profiles</h3>
+              <p>
+                A profile is a skill set and its MCP servers. Applying one copies its skills into
+                the library, where you can edit or remove them. Deleting a profile removes only its
+                file, not the skills already in the library.
+              </p>
+            </div>
+            <div className="diag-list">
+              {state.profiles.map((entry) => {
+                const active = state.setup.profile === entry.name;
+                return (
+                  <div className="diag-row" key={entry.name}>
+                    <span className={`diag-dot ${active ? "ok" : "warn"}`} aria-hidden="true" />
+                    <div className="target-copy">
+                      <strong>{entry.name}</strong>
+                      <span className="sheet-note">
+                        {entry.skills} skill{entry.skills === 1 ? "" : "s"} · {entry.servers} MCP
+                        server{entry.servers === 1 ? "" : "s"}
+                        {entry.builtin ? " · built in" : ""}
+                      </span>
+                    </div>
+                    <span className="spacer" />
+                    {active ? (
+                      <span className="chip accent">Active</span>
+                    ) : (
+                      <button
+                        className="ghost-btn"
+                        disabled={applying !== null || deleting !== null}
+                        onClick={() => void applyProfile(entry.name)}
+                      >
+                        {applying === entry.name ? Icon.Spinner : Icon.Download} Apply
+                      </button>
+                    )}
+                    {!entry.builtin &&
+                      (confirmDelete === entry.name ? (
+                        <>
+                          <button
+                            className="ghost-btn danger"
+                            disabled={deleting !== null}
+                            onClick={() => void deleteProfile(entry.name)}
+                            title={`Delete the ${entry.name} profile file`}
+                          >
+                            {deleting === entry.name ? Icon.Spinner : "Delete"}
+                          </button>
+                          <button
+                            className="ghost-btn"
+                            onClick={() => setConfirmDelete(null)}
+                          >
+                            Keep
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="ghost-btn"
+                          aria-label={`Delete ${entry.name}`}
+                          title="Delete this profile file"
+                          onClick={() => setConfirmDelete(entry.name)}
+                        >
+                          {Icon.Trash}
+                        </button>
+                      ))}
+                  </div>
+                );
+              })}
             </div>
           </section>
 
           <section className="panel">
             <div className="panel-head">
-              <h3>Sources</h3>
+              <h3>Export the current setup</h3>
               <p>
-                The store is the copy Kilgharrah edits and links into the CLI. Hermes keeps its own
-                library, which Kilgharrah reads and can import from.
+                Saves the installed skills and MCP servers as a JSON profile in the profiles
+                folder. Use it on another machine, or keep it as a backup.
+              </p>
+            </div>
+            <div className="import-row">
+              <input
+                className="input"
+                value={profileName}
+                onChange={(event) => setProfileName(event.target.value)}
+                placeholder="Profile name"
+              />
+              <button
+                className="primary compact"
+                disabled={!profileName.trim() || exporting}
+                onClick={() => void exportProfile()}
+              >
+                {exporting ? Icon.Spinner : Icon.Download} Export
+              </button>
+            </div>
+          </section>
+        </>
+      ) : panel === "agents" ? (
+        <>
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Agent mirrors</h3>
+              <p>
+                Your main agent always gets every enabled skill. Turn on another agent here to link
+                the same skills into its folder. Nothing is copied; the folders point at the
+                library.
+              </p>
+            </div>
+            <div className="target-list">
+              <div className="target-row">
+                <span className="diag-dot ok" aria-hidden="true" />
+                <div className="target-copy">
+                  <strong>{state.setup.agentName}</strong>
+                  <span className="sheet-note mono">{state.skillsRoot}</span>
+                </div>
+                <span className="spacer" />
+                <span className="chip">
+                  {state.skills.filter((skill) => skill.enabled).length} linked
+                </span>
+              </div>
+              {state.agentTargets
+                .filter((target) => target.id !== state.setup.agent)
+                .map((target) => {
+                const on = targets.includes(target.id);
+                return (
+                  <label className="target-row" key={target.id}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() =>
+                        setTargets((previous) =>
+                          on ? previous.filter((value) => value !== target.id) : [...previous, target.id]
+                        )
+                      }
+                      aria-label={`Mirror to ${target.name}`}
+                    />
+                    <div className="target-copy">
+                      <strong>{target.name}</strong>
+                      <span className="sheet-note mono">{target.path}</span>
+                    </div>
+                    <span className="spacer" />
+                    <span className="chip">{on ? `${target.linked} linked` : "off"}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="sheet-note">
+              MCP servers are mirrored to the same agents: Claude uses `.claude.json` or `.mcp.json`,
+              Gemini uses `settings.json`, and Codex uses a marked block in `config.toml`.
+            </p>
+            <div className="filters">
+              <button
+                className="primary compact"
+                disabled={!targetsDirty || savingTargets}
+                onClick={() => void saveTargets()}
+              >
+                {savingTargets ? Icon.Spinner : Icon.Check} Save mirrors
+              </button>
+              <span className="sheet-note">
+                Saving also repairs missing links for skills that are already on.
+              </span>
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h3>What lands where</h3>
+              <p>
+                Each agent reads `SKILL.md` from its own skills folder. A skill that is off stays
+                in the library and is removed from every mirror, so turning an agent on never
+                enables a skill you disabled.
               </p>
             </div>
             <div className="filters">
-              <button className="ghost-btn" onClick={() => void copy(state.store)}>
-                {Icon.Copy} Copy store path
+              <span className="chip">the library stays the source</span>
+              <span className="chip">mirrors are links</span>
+              <span className="chip">Windows copies instead</span>
+            </div>
+          </section>
+        </>
+      ) : panel === "diagnostics" ? (
+        <>
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Health checks</h3>
+              <p>
+                These run on this machine only. They look at the library, the agent folder, your
+                MCP config, links, and install records.
+              </p>
+            </div>
+            {checks ? (
+              <div className="diag-list">
+                {checks.checks.map((check) => (
+                  <div className="diag-row" key={check.id}>
+                    <span className={`diag-dot ${check.status}`} aria-hidden="true" />
+                    <div className="target-copy">
+                      <strong>{check.label}</strong>
+                      <span className="sheet-note">{check.detail}</span>
+                    </div>
+                    <span className="spacer" />
+                    <span className="chip">{check.status === "error" ? "fix" : check.status}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="skel skel-line" />
+            )}
+            <div className="filters">
+              <button className="ghost-btn" disabled={checking} onClick={() => void runDiagnostics()}>
+                {Icon.Refresh} {checking ? "Checking" : "Run checks"}
               </button>
-              <button className="ghost-btn" onClick={() => void copy(state.hermesRoot)}>
-                {Icon.Copy} Copy Hermes path
-              </button>
+              {checks && <span className="chip">{checks.ok ? "All clear" : "Needs a look"}</span>}
             </div>
           </section>
         </>
@@ -171,7 +531,7 @@ export function SettingsView({
               </p>
             </div>
             <div className="facts">
-              <Fact label="Installed" value={VERSION} />
+              <Fact label="Installed" value={version || "Unknown"} />
               <Fact label="Channel" value="Stable" />
               <Fact
                 label="Available"
@@ -206,6 +566,81 @@ export function SettingsView({
                   {Icon.Download} Install {update.version}
                 </button>
               )}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Skill updates</h3>
+              <p>
+                Kilgharrah asks ClawHub for the published version of each skill it installed. A
+                skill with no install record, or one from another source, is reported rather than
+                guessed.
+              </p>
+            </div>
+            {skillUpdates === null ? (
+              <p className="sheet-note">Run a check to compare installed skills with ClawHub.</p>
+            ) : pendingUpdates.length === 0 && updateErrors.length === 0 ? (
+              <p className="sheet-note">No published updates found for the checked skills.</p>
+            ) : (
+              <div className="diag-list">
+                {pendingUpdates.map((row) => (
+                  <div className="diag-row" key={`${row.category}:${row.slug}`}>
+                    <span className="diag-dot warn" aria-hidden="true" />
+                    <div className="target-copy">
+                      <strong>{row.name}</strong>
+                      <span className="sheet-note">
+                        {row.current ? `v${row.current}` : "unversioned"} to v{row.latest}
+                      </span>
+                    </div>
+                    <span className="spacer" />
+                    <button
+                      className="ghost-btn"
+                      disabled={updatingSlug === row.slug}
+                      onClick={() => void updateSkill(row)}
+                    >
+                      {updatingSlug === row.slug ? Icon.Spinner : Icon.Download} Update
+                    </button>
+                  </div>
+                ))}
+                {updateErrors.map((row) => (
+                  <div className="diag-row" key={`${row.category}:${row.slug}`}>
+                    <span className="diag-dot error" aria-hidden="true" />
+                    <div className="target-copy">
+                      <strong>{row.name}</strong>
+                      <span className="sheet-note">{row.detail}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {unknownUpdates.length > 0 && (
+              <p className="sheet-note">
+                {unknownUpdates.length} skill{unknownUpdates.length === 1 ? "" : "s"} cannot be
+                checked: no install record or no update feed for the source.
+              </p>
+            )}
+            <div className="filters">
+              <button
+                className="ghost-btn"
+                disabled={checkingSkills}
+                onClick={() => void runSkillUpdates()}
+              >
+                {Icon.Refresh} {checkingSkills ? "Checking" : "Check skill updates"}
+              </button>
+              {skillUpdates && (
+                <span className="chip">
+                  {pendingUpdates.length} update{pendingUpdates.length === 1 ? "" : "s"}
+                </span>
+              )}
+              <span className="spacer" />
+              <button
+                className="primary compact"
+                disabled={updatingAll || pendingUpdates.length === 0}
+                onClick={() => void updateAll()}
+              >
+                {updatingAll ? Icon.Spinner : Icon.Download} Update all
+              </button>
             </div>
           </section>
         </>
@@ -257,15 +692,11 @@ export function SettingsView({
               </p>
             </div>
             <div className="credit">
-              <span className="credit-mark">FF</span>
+              <span className="credit-mark">AG</span>
               <div className="credit-main">
-                <strong>Freebuff CLI</strong>
+                <strong>Main agent</strong>
                 <span className="sheet-note">Loads the skills and MCP servers this app manages.</span>
               </div>
-              <span className="spacer" />
-              <button className="ghost-btn" onClick={() => open("https://freebuff.com")}>
-                {Icon.External} Open
-              </button>
             </div>
             <div className="filters">
               <span className="chip">Tauri 2</span>

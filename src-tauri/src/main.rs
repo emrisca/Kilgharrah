@@ -1,8 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use tauri::Emitter;
 use std::fs;
@@ -21,6 +22,21 @@ const MAX_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_READ: u64 = 512 * 1024;
 const PREVIEW_CHARS: usize = 20_000;
 const MAX_SCAN_DEPTH: usize = 4;
+const META_FILE: &str = ".kilgharrah.json";
+
+/// Agent skill folders Kilgharrah can mirror into. The main agent's folder is
+/// always linked; these are opt-in from Settings.
+const AGENT_TARGETS: [(&str, &str, &str); 3] = [
+    ("claude", "Claude Code", ".claude/skills"),
+    ("codex", "Codex CLI", ".codex/skills"),
+    ("gemini", "Gemini CLI", ".gemini/skills"),
+];
+
+/// Files that run code if an agent follows the skill. They are reported, not
+/// executed or scanned for behaviour.
+const SCRIPT_EXTENSIONS: [&str; 10] = [
+    "sh", "bash", "zsh", "ps1", "bat", "cmd", "py", "js", "ts", "rb",
+];
 
 /// The store's fixed category set. Extra folders the user adds are still read.
 const CATEGORIES: [(&str, &str); 6] = [
@@ -116,6 +132,181 @@ struct Skill {
     enabled: bool,
     files: usize,
     updated_at: u64,
+    version: Option<String>,
+    origin: String,
+    installed_at: u64,
+    modified: bool,
+    scripts: usize,
+    profile: Option<String>,
+}
+
+/// Written next to SKILL.md when Kilgharrah installs a skill. It answers what
+/// was installed, from where, at which version, and whether the files changed.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InstalledMeta {
+    name: String,
+    origin: String,
+    upstream: Option<String>,
+    version: Option<String>,
+    installed_at: u64,
+    hash: String,
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentTarget {
+    id: String,
+    name: String,
+    path: String,
+    enabled: bool,
+    linked: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Settings {
+    #[serde(default)]
+    agent_targets: Vec<String>,
+    #[serde(default)]
+    onboarded: bool,
+    #[serde(default = "default_scope")]
+    scope: String,
+    #[serde(default)]
+    project_root: Option<String>,
+    #[serde(default = "default_agent")]
+    agent: String,
+    #[serde(default)]
+    profile: Option<String>,
+    /// Names Kilgharrah wrote into each mirrored config, so a later change can
+    /// remove its own entries without touching servers the user added by hand.
+    #[serde(default)]
+    mirror_state: BTreeMap<String, Vec<String>>,
+}
+
+fn default_scope() -> String {
+    "home".into()
+}
+
+fn default_agent() -> String {
+    "freebuff".into()
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            agent_targets: Vec::new(),
+            onboarded: false,
+            scope: default_scope(),
+            project_root: None,
+            agent: default_agent(),
+            profile: None,
+            mirror_state: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SetupView {
+    onboarded: bool,
+    scope: String,
+    project_root: Option<String>,
+    agent: String,
+    agent_name: String,
+    profile: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SkillUpdate {
+    category: String,
+    slug: String,
+    name: String,
+    origin: String,
+    current: Option<String>,
+    latest: Option<String>,
+    status: String,
+    detail: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Check {
+    id: String,
+    label: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Diagnostics {
+    ok: bool,
+    checks: Vec<Check>,
+    checked_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProfileFile {
+    path: String,
+    content: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProfileSkill {
+    name: String,
+    category: String,
+    slug: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    files: Vec<ProfileFile>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProfileServer {
+    name: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Profile {
+    name: String,
+    #[serde(default)]
+    created_at: u64,
+    #[serde(default)]
+    skills: Vec<ProfileSkill>,
+    #[serde(default)]
+    servers: Vec<ProfileServer>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProfileInfo {
+    name: String,
+    path: Option<String>,
+    skills: usize,
+    servers: usize,
+    builtin: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateReport {
+    state: AppState,
+    updated: usize,
+    failed: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -145,6 +336,9 @@ struct AppState {
     categories: Vec<Category>,
     skills: Vec<Skill>,
     servers: Vec<McpServer>,
+    agent_targets: Vec<AgentTarget>,
+    setup: SetupView,
+    profiles: Vec<ProfileInfo>,
 }
 
 #[derive(Serialize, Clone)]
@@ -199,12 +393,67 @@ fn skills_store() -> PathBuf {
     store_root().join("skills")
 }
 
+fn expand_path(value: &str) -> PathBuf {
+    let trimmed = value.trim();
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return home_dir().join(rest);
+    }
+    if trimmed == "~" {
+        return home_dir();
+    }
+    PathBuf::from(trimmed)
+}
+
+fn base_dir(settings: &Settings) -> PathBuf {
+    if settings.scope == "project" {
+        settings
+            .project_root
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(expand_path)
+            .unwrap_or_else(home_dir)
+    } else {
+        home_dir()
+    }
+}
+
+fn skills_relative(agent: &str) -> &'static str {
+    match agent {
+        "claude" => ".claude/skills",
+        "codex" => ".codex/skills",
+        "gemini" => ".gemini/skills",
+        _ => ".agents/skills",
+    }
+}
+
+fn agent_name(agent: &str) -> &'static str {
+    match agent {
+        "claude" => "Claude Code",
+        "codex" => "Codex CLI",
+        "gemini" => "Gemini CLI",
+        _ => "Freebuff CLI",
+    }
+}
+
+fn primary_skills_root(settings: &Settings) -> PathBuf {
+    if settings.scope == "home" && settings.agent == "freebuff" {
+        agents_root().join("skills")
+    } else {
+        base_dir(settings).join(skills_relative(&settings.agent))
+    }
+}
+
 fn links_root() -> PathBuf {
-    agents_root().join("skills")
+    primary_skills_root(&read_settings())
 }
 
 fn mcp_path() -> PathBuf {
-    agents_root().join("mcp.json")
+    let settings = read_settings();
+    if settings.scope == "project" {
+        base_dir(&settings).join(".agents").join("mcp.json")
+    } else {
+        agents_root().join("mcp.json")
+    }
 }
 
 fn ensure_store() -> Result<(), String> {
@@ -294,6 +543,642 @@ fn modified_secs(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------- install records
+
+fn meta_path(dir: &Path) -> PathBuf {
+    dir.join(META_FILE)
+}
+
+fn read_meta(dir: &Path) -> Option<InstalledMeta> {
+    let text = fs::read_to_string(meta_path(dir)).ok()?;
+    serde_json::from_str::<InstalledMeta>(&text).ok()
+}
+
+fn write_meta(dir: &Path, meta: &InstalledMeta) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(meta)
+        .map_err(|e| format!("Could not encode the install record: {e}"))?;
+    fs::write(meta_path(dir), format!("{text}\n"))
+        .map_err(|e| format!("Could not write the install record: {e}"))
+}
+
+fn collect_hash_input(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) {
+    if out.len() >= 4000 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name == META_FILE || name == ".DS_Store" {
+            continue;
+        }
+        if path.is_dir() {
+            collect_hash_input(&path, base, out);
+        } else if let Ok(relative) = path.strip_prefix(base) {
+            out.push((relative.to_string_lossy().to_string(), path));
+        }
+    }
+}
+
+/// A stable digest over every installed file and its relative path. The install
+/// record itself is excluded so writing it does not change the digest.
+fn hash_skill(dir: &Path) -> String {
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    collect_hash_input(dir, dir, &mut files);
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = Sha256::new();
+    for (relative, path) in files {
+        hasher.update(relative.as_bytes());
+        hasher.update([0u8]);
+        if let Ok(bytes) = fs::read(path) {
+            hasher.update(&bytes);
+        }
+        hasher.update([0u8]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn count_scripts(dir: &Path, depth: usize) -> usize {
+    if depth == 0 {
+        return 0;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            total += count_scripts(&path, depth - 1);
+        } else if let Some(ext) = path.extension().and_then(|value| value.to_str()) {
+            if SCRIPT_EXTENSIONS.iter().any(|known| known.eq_ignore_ascii_case(ext)) {
+                total += 1;
+            }
+        }
+    }
+    total
+}
+
+// ---------------------------------------------------------------- settings
+
+fn settings_path() -> PathBuf {
+    store_root().join("settings.json")
+}
+
+fn read_settings() -> Settings {
+    fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Settings>(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_settings(settings: &Settings) -> Result<(), String> {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Could not create the store: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("Could not encode the settings: {e}"))?;
+    fs::write(&path, format!("{text}\n")).map_err(|e| format!("Could not save the settings: {e}"))
+}
+
+// ---------------------------------------------------------------- profiles
+
+fn profiles_dir() -> PathBuf {
+    store_root().join("profiles")
+}
+
+fn hermes_mcp_path() -> PathBuf {
+    hermes_root()
+        .parent()
+        .map(|parent| parent.join("mcp.json"))
+        .unwrap_or_else(|| home_dir().join(".hermes").join("mcp.json"))
+}
+
+fn walk_profile_files(dir: &Path, base: &Path, depth: usize, out: &mut Vec<ProfileFile>) {
+    if depth > 4 || out.len() >= MAX_FILES {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name == META_FILE || name == ".DS_Store" {
+            continue;
+        }
+        if path.is_dir() {
+            walk_profile_files(&path, base, depth + 1, out);
+        } else if let Ok(relative) = path.strip_prefix(base) {
+            if let Ok(content) = fs::read_to_string(&path) {
+                out.push(ProfileFile {
+                    path: relative.to_string_lossy().to_string(),
+                    content,
+                });
+            }
+        }
+    }
+}
+
+fn profile_snapshot(name: &str) -> Result<Profile, String> {
+    let mut candidates = Vec::new();
+    collect_skills(skills_store(), "store", &mut candidates);
+    let mut skills = Vec::new();
+    let mut total = 0usize;
+    for (dir, category, _) in candidates {
+        let slug = dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let text = fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
+        let (display, description) = parse_frontmatter(&text);
+        let mut files = Vec::new();
+        walk_profile_files(&dir, &dir, 0, &mut files);
+        total += files.iter().map(|file| file.content.len()).sum::<usize>();
+        if total > MAX_BYTES as usize * 2 {
+            return Err("That profile is larger than the export limit.".into());
+        }
+        skills.push(ProfileSkill {
+            name: display
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| titleize(&slug)),
+            category,
+            slug,
+            description: description.unwrap_or_default(),
+            files,
+        });
+    }
+    let servers = read_servers()
+        .into_iter()
+        .map(|server| ProfileServer {
+            name: server.name,
+            command: server.command,
+            args: server.args,
+            env: server.env,
+        })
+        .collect();
+    Ok(Profile {
+        name: name.to_string(),
+        created_at: now_secs(),
+        skills,
+        servers,
+    })
+}
+
+#[tauri::command]
+fn export_profile(name: String) -> Result<String, String> {
+    ensure_store()?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the profile a name.".into());
+    }
+    let profile = profile_snapshot(name)?;
+    if profile.skills.is_empty() && profile.servers.is_empty() {
+        return Err("There are no installed skills or MCP servers to export yet.".into());
+    }
+    let dir = profiles_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("Could not create the profiles folder: {e}"))?;
+    let stem = {
+        let value = slugify(name);
+        if value.is_empty() { "profile".to_string() } else { value }
+    };
+    let path = dir.join(format!("{stem}.json"));
+    let text = serde_json::to_string_pretty(&profile)
+        .map_err(|e| format!("Could not encode the profile: {e}"))?;
+    fs::write(&path, format!("{text}\n")).map_err(|e| format!("Could not save the profile: {e}"))?;
+    Ok(path.display().to_string())
+}
+
+fn hermes_counts() -> (usize, usize) {
+    let mut candidates = Vec::new();
+    collect_skills(hermes_root(), "hermes", &mut candidates);
+    let servers = fs::read_to_string(hermes_mcp_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| value.get("mcpServers").and_then(|v| v.as_object()).map(|map| map.len()))
+        .unwrap_or(0);
+    (candidates.len(), servers)
+}
+
+fn list_profiles() -> Vec<ProfileInfo> {
+    let (hermes_skills, hermes_servers) = hermes_counts();
+    let mut out = vec![ProfileInfo {
+        name: "Hermes".into(),
+        path: None,
+        skills: hermes_skills,
+        servers: hermes_servers,
+        builtin: true,
+    }];
+    if let Ok(entries) = fs::read_dir(profiles_dir()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(profile) = serde_json::from_str::<Profile>(&text) else {
+                continue;
+            };
+            out.push(ProfileInfo {
+                name: profile.name,
+                path: Some(path.display().to_string()),
+                skills: profile.skills.len(),
+                servers: profile.servers.len(),
+                builtin: false,
+            });
+        }
+    }
+    out.sort_by(|a, b| b.builtin.cmp(&a.builtin).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+fn merge_profile_servers(servers: &[ProfileServer]) -> Result<(), String> {
+    if servers.is_empty() {
+        return Ok(());
+    }
+    let mut value = read_mcp();
+    if !value.get("mcpServers").map(|entry| entry.is_object()).unwrap_or(false) {
+        value["mcpServers"] = json!({});
+    }
+    if let Some(map) = value.get_mut("mcpServers").and_then(|entry| entry.as_object_mut()) {
+        for server in servers {
+            if map.contains_key(&server.name) {
+                continue;
+            }
+            map.insert(
+                server.name.clone(),
+                json!({
+                    "command": server.command,
+                    "args": server.args,
+                    "env": server.env,
+                }),
+            );
+        }
+    }
+    write_mcp(&value)
+}
+
+fn install_profile(profile: &Profile) -> Result<usize, String> {
+    ensure_store()?;
+    let mut installed = 0usize;
+    for skill in &profile.skills {
+        if !safe_segment(&skill.category) || !safe_segment(&skill.slug) {
+            continue;
+        }
+        let dir = skills_store().join(&skill.category).join(&skill.slug);
+        if dir.exists() || skill.files.is_empty() {
+            continue;
+        }
+        fs::create_dir_all(&dir).map_err(|e| format!("Could not create the skill folder: {e}"))?;
+        let mut wrote = false;
+        for file in &skill.files {
+            let Some(relative) = safe_relative(&file.path) else {
+                continue;
+            };
+            let target = dir.join(&relative);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("Could not create a folder: {e}"))?;
+            }
+            fs::write(&target, &file.content)
+                .map_err(|e| format!("Could not write a profile file: {e}"))?;
+            wrote = true;
+        }
+        if !wrote {
+            let _ = fs::remove_dir_all(&dir);
+            continue;
+        }
+        write_meta(
+            &dir,
+            &InstalledMeta {
+                name: skill.name.clone(),
+                origin: "profile".into(),
+                upstream: None,
+                version: None,
+                installed_at: now_secs(),
+                hash: hash_skill(&dir),
+                profile: Some(profile.name.clone()),
+            },
+        )?;
+        link_skill(&skill.slug, &dir)?;
+        installed += 1;
+    }
+    merge_profile_servers(&profile.servers)?;
+    let mut settings = read_settings();
+    settings.profile = Some(profile.name.clone());
+    write_settings(&settings)?;
+    Ok(installed)
+}
+
+fn apply_hermes() -> Result<usize, String> {
+    ensure_store()?;
+    let mut candidates = Vec::new();
+    collect_skills(hermes_root(), "hermes", &mut candidates);
+    let mut installed = 0usize;
+    for (from, category, _) in candidates {
+        let Some(slug) = from.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let category = if safe_segment(&category) && skills_store().join(&category).is_dir() {
+            category
+        } else {
+            "other".to_string()
+        };
+        let to = skills_store().join(&category).join(slug);
+        if to.exists() {
+            continue;
+        }
+        copy_dir(&from, &to).map_err(|e| format!("Could not copy a Hermes skill: {e}"))?;
+        write_meta(
+            &to,
+            &InstalledMeta {
+                name: titleize(slug),
+                origin: "profile".into(),
+                upstream: None,
+                version: None,
+                installed_at: now_secs(),
+                hash: hash_skill(&to),
+                profile: Some("Hermes".into()),
+            },
+        )?;
+        link_skill(slug, &to)?;
+        installed += 1;
+    }
+    let hermes = fs::read_to_string(hermes_mcp_path())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({ "mcpServers": {} }));
+    if let Some(map) = hermes.get("mcpServers").and_then(|value| value.as_object()) {
+        let servers: Vec<ProfileServer> = map
+            .iter()
+            .map(|(name, entry)| ProfileServer {
+                name: name.clone(),
+                command: entry
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                args: entry
+                    .get("args")
+                    .and_then(|value| value.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                env: entry
+                    .get("env")
+                    .and_then(|value| value.as_object())
+                    .map(|map| {
+                        map.iter()
+                            .filter_map(|(key, value)| {
+                                value.as_str().map(|text| (key.clone(), text.to_string()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+            .filter(|server| !server.command.is_empty())
+            .collect();
+        merge_profile_servers(&servers)?;
+    }
+    let mut settings = read_settings();
+    settings.profile = Some("Hermes".into());
+    write_settings(&settings)?;
+    Ok(installed)
+}
+
+fn apply_profile_named(name: &str) -> Result<usize, String> {
+    if name.eq_ignore_ascii_case("hermes") {
+        return apply_hermes();
+    }
+    let wanted = name.trim().to_string();
+    let mut found: Option<Profile> = None;
+    if let Ok(entries) = fs::read_dir(profiles_dir()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(profile) = serde_json::from_str::<Profile>(&text) else {
+                continue;
+            };
+            if profile.name == wanted || slugify(&profile.name) == slugify(&wanted) {
+                found = Some(profile);
+                break;
+            }
+        }
+    }
+    let profile = found.ok_or("That profile is not in the profiles folder.")?;
+    install_profile(&profile)
+}
+
+#[tauri::command(async)]
+fn apply_profile(name: String) -> Result<AppState, String> {
+    apply_profile_named(&name)?;
+    mirror_mcp()?;
+    build_state()
+}
+
+/// Find the profile file whose stored name matches, then remove it. Returns the
+/// deleted path so the caller can report it.
+fn remove_profile_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let wanted = name.trim();
+    if wanted.is_empty() {
+        return Err("Pick a profile to delete.".into());
+    }
+    let mut target: Option<PathBuf> = None;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(profile) = serde_json::from_str::<Profile>(&text) else {
+                continue;
+            };
+            if profile.name == wanted || slugify(&profile.name) == slugify(wanted) {
+                target = Some(path);
+                break;
+            }
+        }
+    }
+    let path = target.ok_or("That profile is not in the profiles folder.")?;
+    fs::remove_file(&path).map_err(|e| format!("Could not delete the profile: {e}"))?;
+    Ok(path)
+}
+
+/// Remove an exported profile file. The built-in Hermes profile has no file to
+/// delete, so it is refused. Skills already copied into the library stay there.
+#[tauri::command]
+fn delete_profile(name: String) -> Result<AppState, String> {
+    let wanted = name.trim().to_string();
+    if wanted.is_empty() {
+        return Err("Pick a profile to delete.".into());
+    }
+    if wanted.eq_ignore_ascii_case("hermes") {
+        return Err("The built-in Hermes profile cannot be deleted.".into());
+    }
+    remove_profile_file(&profiles_dir(), &wanted)?;
+    let mut settings = read_settings();
+    let active = settings
+        .profile
+        .as_deref()
+        .map(|value| value.eq_ignore_ascii_case(&wanted))
+        .unwrap_or(false);
+    if active {
+        settings.profile = None;
+        write_settings(&settings)?;
+    }
+    build_state()
+}
+
+/// Finish the first-run setup. The chosen project folder and agent decide where
+/// skills and MCP configs live, so existing links move to the new root.
+#[tauri::command]
+fn complete_setup(
+    project_root: Option<String>,
+    agent: String,
+    profile: Option<String>,
+) -> Result<AppState, String> {
+    ensure_store()?;
+    let agent = agent.trim().to_lowercase();
+    if !["freebuff", "claude", "codex", "gemini"].contains(&agent.as_str()) {
+        return Err("Pick one of the agents in the list.".into());
+    }
+    let root_text = project_root.unwrap_or_default().trim().to_string();
+    let (scope, project) = if root_text.is_empty() {
+        ("home".to_string(), None)
+    } else {
+        let path = expand_path(&root_text);
+        if !path.is_dir() {
+            return Err("That project folder does not exist.".into());
+        }
+        ("project".to_string(), Some(path.display().to_string()))
+    };
+
+    let before = read_settings();
+    let old_root = primary_skills_root(&before);
+    let enabled: Vec<String> = scan_store_slugs()
+        .into_iter()
+        .filter(|slug| fs::symlink_metadata(old_root.join(slug)).is_ok())
+        .collect();
+
+    let mut settings = before;
+    settings.onboarded = true;
+    settings.scope = scope;
+    settings.project_root = project;
+    settings.agent = agent.clone();
+    settings.agent_targets.retain(|id| *id != agent);
+    write_settings(&settings)?;
+
+    let new_root = primary_skills_root(&settings);
+    fs::create_dir_all(&new_root)
+        .map_err(|e| format!("Could not create {}: {e}", new_root.display()))?;
+    if new_root != old_root {
+        for slug in &enabled {
+            unlink_from(&old_root, slug);
+        }
+    }
+    let mut candidates = Vec::new();
+    collect_skills(skills_store(), "store", &mut candidates);
+    for (dir, _, _) in candidates {
+        let Some(slug) = dir.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if enabled.iter().any(|value| value == slug) {
+            let _ = link_into(&new_root, slug, &dir);
+        }
+    }
+
+    if let Some(name) = profile {
+        let name = name.trim();
+        if !name.is_empty() && !name.eq_ignore_ascii_case("none") {
+            apply_profile_named(name)?;
+        }
+    }
+    mirror_mcp()?;
+    build_state()
+}
+
+fn target_root(relative: &str) -> PathBuf {
+    base_dir(&read_settings()).join(relative)
+}
+
+fn enabled_targets() -> Vec<(&'static str, &'static str, PathBuf)> {
+    let settings = read_settings();
+    AGENT_TARGETS
+        .iter()
+        .filter(|(id, _, _)| *id != settings.agent)
+        .filter(|(id, _, _)| settings.agent_targets.iter().any(|value| value == id))
+        .map(|(id, name, relative)| (*id, *name, target_root(relative)))
+        .collect()
+}
+
+fn agent_target_state() -> Vec<AgentTarget> {
+    let settings = read_settings();
+    let enabled_slugs: Vec<String> = scan_store_slugs()
+        .into_iter()
+        .filter(|slug| is_enabled(slug))
+        .collect();
+    AGENT_TARGETS
+        .iter()
+        .map(|(id, name, relative)| {
+            let root = target_root(relative);
+            let enabled = settings.agent != *id
+                && settings.agent_targets.iter().any(|value| value == id);
+            AgentTarget {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
+                path: root.display().to_string(),
+                enabled,
+                linked: if enabled {
+                    enabled_slugs
+                        .iter()
+                        .filter(|slug| fs::symlink_metadata(root.join(slug)).is_ok())
+                        .count()
+                } else {
+                    0
+                },
+            }
+        })
+        .collect()
+}
+
+/// Slugs that exist in the store, whether enabled or not.
+fn scan_store_slugs() -> Vec<String> {
+    let mut candidates = Vec::new();
+    collect_skills(skills_store(), "store", &mut candidates);
+    candidates
+        .into_iter()
+        .filter_map(|(dir, _, _)| dir.file_name().and_then(|n| n.to_str()).map(String::from))
+        .collect()
+}
+
 // ---------------------------------------------------------------- skills
 
 fn parse_frontmatter(text: &str) -> (Option<String>, Option<String>) {
@@ -327,6 +1212,9 @@ fn count_files(dir: &Path, depth: usize) -> usize {
     let mut total = 0;
     for entry in entries.flatten() {
         let path = entry.path();
+        if path.file_name().and_then(|n| n.to_str()) == Some(META_FILE) {
+            continue;
+        }
         if path.is_dir() {
             total += count_files(&path, depth - 1);
         } else {
@@ -344,9 +1232,9 @@ fn is_enabled(slug: &str) -> bool {
     fs::symlink_metadata(link_path(slug)).is_ok()
 }
 
-fn link_skill(slug: &str, dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(links_root()).map_err(|e| format!("Could not create {}: {e}", links_root().display()))?;
-    let link = link_path(slug);
+fn link_into(root: &Path, slug: &str, dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(root).map_err(|e| format!("Could not create {}: {e}", root.display()))?;
+    let link = root.join(slug);
     if let Ok(meta) = fs::symlink_metadata(&link) {
         if meta.file_type().is_symlink() || meta.is_file() {
             fs::remove_file(&link).map_err(|e| format!("Could not replace the link: {e}"))?;
@@ -368,6 +1256,16 @@ fn link_skill(slug: &str, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Links a skill into the main agent's folder and every enabled agent folder.
+fn link_skill(slug: &str, dir: &Path) -> Result<(), String> {
+    link_into(&links_root(), slug, dir)?;
+    for (_, _, root) in enabled_targets() {
+        // A mirror is helpful but not worth failing the main link over.
+        let _ = link_into(&root, slug, dir);
+    }
+    Ok(())
+}
+
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
@@ -382,12 +1280,22 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn unlink_skill(slug: &str) {
-    let link = link_path(slug);
+fn unlink_from(root: &Path, slug: &str) {
+    let link = root.join(slug);
     if let Ok(meta) = fs::symlink_metadata(&link) {
         if meta.file_type().is_symlink() || meta.is_file() {
             let _ = fs::remove_file(&link);
+        } else if meta.is_dir() {
+            // Windows enables by copying, so disabling must remove the folder.
+            let _ = fs::remove_dir_all(&link);
         }
+    }
+}
+
+fn unlink_skill(slug: &str) {
+    unlink_from(&links_root(), slug);
+    for (_, _, root) in enabled_targets() {
+        unlink_from(&root, slug);
     }
 }
 
@@ -423,14 +1331,20 @@ fn collect_skills(root: PathBuf, source: &str, out: &mut Vec<(PathBuf, String, S
 }
 
 fn scan_skills() -> Vec<Skill> {
-    scan_roots(skills_store(), hermes_root())
+    let mut candidates: Vec<(PathBuf, String, String)> = Vec::new();
+    collect_skills(skills_store(), "store", &mut candidates);
+    build_skills(candidates)
 }
 
+#[cfg(test)]
 fn scan_roots(store: PathBuf, hermes: PathBuf) -> Vec<Skill> {
     let mut candidates: Vec<(PathBuf, String, String)> = Vec::new();
     collect_skills(store, "store", &mut candidates);
     collect_skills(hermes, "hermes", &mut candidates);
+    build_skills(candidates)
+}
 
+fn build_skills(candidates: Vec<(PathBuf, String, String)>) -> Vec<Skill> {
     let mut skills = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     for (dir, category, source) in candidates {
@@ -448,6 +1362,11 @@ fn scan_roots(store: PathBuf, hermes: PathBuf) -> Vec<Skill> {
         }
         seen.push(slug.clone());
         let (name, description) = parse_frontmatter(&text);
+        let record = if source == "store" { read_meta(&dir) } else { None };
+        let modified = record
+            .as_ref()
+            .map(|meta| !meta.hash.is_empty() && hash_skill(&dir) != meta.hash)
+            .unwrap_or(false);
         skills.push(Skill {
             id: format!("{source}:{category}:{slug}"),
             source: source.clone(),
@@ -458,6 +1377,15 @@ fn scan_roots(store: PathBuf, hermes: PathBuf) -> Vec<Skill> {
             enabled: source == "store" && is_enabled(&slug),
             files: count_files(&dir, 3),
             updated_at: modified_secs(&manifest),
+            version: record.as_ref().and_then(|meta| meta.version.clone()),
+            origin: record
+                .as_ref()
+                .map(|meta| meta.origin.clone())
+                .unwrap_or_else(|| if source == "hermes" { "hermes".into() } else { "unknown".into() }),
+            installed_at: record.as_ref().map(|meta| meta.installed_at).unwrap_or(0),
+            modified,
+            scripts: count_scripts(&dir, 3),
+            profile: record.as_ref().and_then(|meta| meta.profile.clone()),
             slug,
         });
     }
@@ -479,11 +1407,7 @@ fn list_categories(skills: &[Skill]) -> Vec<Category> {
         if order.iter().any(|(id, _, _)| id == &skill.category) {
             continue;
         }
-        let blurb = if skill.source == "hermes" {
-            "Hermes library"
-        } else {
-            "Your own folder"
-        };
+        let blurb = "Your own folder";
         order.push((skill.category.clone(), blurb.to_string(), skill.source.clone()));
     }
     order
@@ -565,7 +1489,7 @@ fn read_servers() -> Vec<McpServer> {
 fn http_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(25))
-        .user_agent("Kilgharrah/0.1 (skills and MCP manager for Freebuff)")
+        .user_agent("Kilgharrah/0.1 (skills and MCP manager)")
         .build()
 }
 
@@ -1003,8 +1927,90 @@ struct AgenticSource {
     raw: String,
 }
 
+/// Splits a GitHub repo or tree URL into owner, repo, and an optional branch
+/// plus folder. A plain repo URL has no folder, so the caller has to find one.
+fn github_parts(url: &str) -> Option<(String, String, Option<(String, String)>)> {
+    let path = url.trim_start_matches("https://github.com/");
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let owner = parts[0].to_string();
+    let repo = parts[1].trim_end_matches(".git").to_string();
+    let nested = if parts.len() >= 4 && parts[2] == "tree" {
+        Some((parts[3].to_string(), parts[4..].join("/")))
+    } else {
+        None
+    };
+    Some((owner, repo, nested))
+}
+
+/// Reads the GitHub source for one AgenticSkills page. The page embeds the
+/// skill's own `githubUrl` next to other related skills, so the lookup starts
+/// at this skill's slug instead of taking the first link on the page.
 fn agentic_source(slug: &str) -> Result<AgenticSource, String> {
-    let page = get_text(&format!("{AGENTIC_BASE}/skills/{}", encode(slug)))?;
+    let html = get_text(&format!("{AGENTIC_BASE}/skills/{}", encode(slug)))?;
+    let page = html.replace("\\\"", "\"");
+    let own = Regex::new(&format!(
+        r#"(?s)"slug":"{}".*?"githubUrl":"(https://github\.com/[^"]+)""#,
+        regex::escape(slug)
+    ))
+    .map_err(|e| format!("Could not read the skill page: {e}"))?;
+    if let Some(caps) = own.captures(&page) {
+        let url = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        if let Some((owner, repo, nested)) = github_parts(url) {
+            let (git_ref, dir) = if let Some((git_ref, dir)) = nested {
+                (git_ref, dir)
+            } else {
+                let meta = get_json(&format!(
+                    "https://api.github.com/repos/{}/{}",
+                    encode(&owner),
+                    encode(&repo)
+                ))?;
+                let branch = meta
+                    .get("default_branch")
+                    .and_then(|v| v.as_str())
+                    .ok_or("GitHub lists no default branch for that skill.")?
+                    .to_string();
+                let tree = get_json(&format!(
+                    "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+                    encode(&owner),
+                    encode(&repo),
+                    encode(&branch)
+                ))?;
+                if tree.get("truncated").and_then(|v| v.as_bool()) == Some(true) {
+                    return Err("That GitHub repo is too large for Kilgharrah to scan.".into());
+                }
+                let skills: Vec<String> = tree
+                    .get("tree")
+                    .and_then(|v| v.as_array())
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(|row| row.get("path").and_then(|v| v.as_str()))
+                            .filter(|path| *path == "SKILL.md" || path.ends_with("/SKILL.md"))
+                            .map(|path| path.trim_end_matches("SKILL.md").trim_end_matches('/').to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match skills.len() {
+                    0 => return Err("That GitHub repo has no SKILL.md.".into()),
+                    1 => (branch, skills[0].clone()),
+                    _ => {
+                        return Err(format!(
+                            "That GitHub repo holds {} skills, so Kilgharrah cannot pick one. Open the repo and install the skill you want.",
+                            skills.len()
+                        ))
+                    }
+                }
+            };
+            let raw = if dir.is_empty() {
+                format!("https://raw.githubusercontent.com/{owner}/{repo}/{git_ref}/SKILL.md")
+            } else {
+                format!("https://raw.githubusercontent.com/{owner}/{repo}/{git_ref}/{dir}/SKILL.md")
+            };
+            return Ok(AgenticSource { owner, repo, git_ref, path: dir, raw });
+        }
+    }
     let re = Regex::new(
         r#"https://raw\.githubusercontent\.com/([^/"\s]+)/([^/"\s]+)/([^/"\s]+)/([^"\s<]+?)/SKILL\.md"#,
     )
@@ -1081,8 +2087,56 @@ fn suggest_category(meta: &Value) -> String {
 
 // ---------------------------------------------------------------- commands
 
+/// Skills installed before records existed get a baseline record with an
+/// unknown source, so edits from now on are still visible.
+fn backfill_records() {
+    let mut candidates = Vec::new();
+    collect_skills(skills_store(), "store", &mut candidates);
+    for (dir, _, _) in candidates {
+        if read_meta(&dir).is_some() {
+            continue;
+        }
+        let slug = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let manifest = dir.join("SKILL.md");
+        let name = fs::read_to_string(&manifest)
+            .ok()
+            .and_then(|text| parse_frontmatter(&text).0)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| titleize(&slug));
+        let _ = write_meta(
+            &dir,
+            &InstalledMeta {
+                name,
+                origin: "unknown".into(),
+                upstream: None,
+                version: None,
+                installed_at: modified_secs(&manifest),
+                hash: hash_skill(&dir),
+                profile: None,
+            },
+        );
+    }
+}
+
+fn setup_view() -> SetupView {
+    let settings = read_settings();
+    SetupView {
+        onboarded: settings.onboarded,
+        scope: settings.scope,
+        project_root: settings.project_root,
+        agent_name: agent_name(&settings.agent).to_string(),
+        agent: settings.agent,
+        profile: settings.profile,
+    }
+}
+
 fn build_state() -> Result<AppState, String> {
     ensure_store()?;
+    backfill_records();
     let skills = scan_skills();
     Ok(AppState {
         store: store_root().display().to_string(),
@@ -1092,6 +2146,9 @@ fn build_state() -> Result<AppState, String> {
         categories: list_categories(&skills),
         skills,
         servers: read_servers(),
+        agent_targets: agent_target_state(),
+        setup: setup_view(),
+        profiles: list_profiles(),
     })
 }
 
@@ -1129,6 +2186,18 @@ fn add_skill(name: String, description: String, body: String, category: String) 
     };
     let text = format!("---\nname: {display}\ndescription: {summary}\n---\n\n{instructions}\n");
     fs::write(dir.join("SKILL.md"), text).map_err(|e| format!("Could not write SKILL.md: {e}"))?;
+    write_meta(
+        &dir,
+        &InstalledMeta {
+            name: display.clone(),
+            origin: "local".into(),
+            upstream: None,
+            version: None,
+            installed_at: now_secs(),
+            hash: hash_skill(&dir),
+            profile: None,
+        },
+    )?;
     link_skill(&slug, &dir)?;
     build_state()
 }
@@ -1239,6 +2308,7 @@ fn save_server(name: String, command: String, args: Vec<String>, env: Vec<String
     }
     servers.insert(name.clone(), Value::Object(entry));
     write_mcp(&Value::Object(root.clone()))?;
+    mirror_mcp()?;
     build_state()
 }
 
@@ -1249,7 +2319,242 @@ fn delete_server(name: String) -> Result<AppState, String> {
         servers.remove(&name);
     }
     write_mcp(&root)?;
+    mirror_mcp()?;
     build_state()
+}
+
+// ---------------------------------------------------------------- MCP mirror
+
+/// The config file each agent reads. The main agent reads the canonical file,
+/// so it has no separate target.
+fn agent_mcp_path(id: &str, settings: &Settings) -> Option<PathBuf> {
+    let project = settings.scope == "project";
+    match id {
+        "claude" if project => Some(base_dir(settings).join(".mcp.json")),
+        "claude" => Some(home_dir().join(".claude.json")),
+        "gemini" if project => Some(base_dir(settings).join(".gemini").join("settings.json")),
+        "gemini" => Some(home_dir().join(".gemini").join("settings.json")),
+        "codex" if project => Some(base_dir(settings).join(".codex").join("config.toml")),
+        "codex" => Some(home_dir().join(".codex").join("config.toml")),
+        _ => None,
+    }
+}
+
+fn mirror_targets(settings: &Settings) -> Vec<(String, PathBuf)> {
+    let mut ids = vec![settings.agent.clone()];
+    for id in &settings.agent_targets {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for id in ids {
+        if let Some(path) = agent_mcp_path(&id, settings) {
+            if out.iter().any(|(_, known)| known == &path) {
+                continue;
+            }
+            out.push((id, path));
+        }
+    }
+    out
+}
+
+fn mirror_json(
+    path: &Path,
+    servers: &serde_json::Map<String, Value>,
+    previous: &[String],
+) -> Result<Vec<String>, String> {
+    let mut root = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    let Some(object) = root.as_object_mut() else {
+        return Err(format!("{} does not hold a JSON object.", path.display()));
+    };
+    let entry = object.entry("mcpServers").or_insert_with(|| json!({}));
+    let Some(map) = entry.as_object_mut() else {
+        return Err(format!(
+            "mcpServers in {} is not an object.",
+            path.display()
+        ));
+    };
+    for name in previous {
+        map.remove(name);
+    }
+    for (name, value) in servers {
+        map.insert(name.clone(), value.clone());
+    }
+    let mut written: Vec<String> = servers.keys().cloned().collect();
+    written.sort();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("Could not encode {}: {e}", path.display()))?;
+    fs::write(path, format!("{text}\n"))
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    Ok(written)
+}
+
+fn toml_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn toml_key(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        value.to_string()
+    } else {
+        toml_string(value)
+    }
+}
+
+const TOML_BEGIN: &str = "# kilgharrah:begin";
+const TOML_END: &str = "# kilgharrah:end";
+
+fn mirror_toml(
+    path: &Path,
+    servers: &serde_json::Map<String, Value>,
+) -> Result<Vec<String>, String> {
+    let mut block = String::from(TOML_BEGIN);
+    block.push_str("\n# Written by Kilgharrah. Change servers in the app, not here.\n");
+    let mut names: Vec<&String> = servers.keys().collect();
+    names.sort();
+    for name in &names {
+        let Some(entry) = servers.get(*name) else {
+            continue;
+        };
+        let command = entry
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        block.push_str(&format!(
+            "\n[mcp_servers.{}]\ncommand = {}\n",
+            toml_key(name),
+            toml_string(command)
+        ));
+        if let Some(args) = entry.get("args").and_then(|value| value.as_array()) {
+            let values: Vec<String> = args
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(toml_string)
+                .collect();
+            block.push_str(&format!("args = [{}]\n", values.join(", ")));
+        }
+        if let Some(env) = entry.get("env").and_then(|value| value.as_object()) {
+            if !env.is_empty() {
+                block.push_str(&format!("[mcp_servers.{}.env]\n", toml_key(name)));
+                for (key, value) in env {
+                    block.push_str(&format!(
+                        "{} = {}\n",
+                        toml_key(key),
+                        toml_string(value.as_str().unwrap_or_default())
+                    ));
+                }
+            }
+        }
+    }
+    block.push_str(TOML_END);
+
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let next = match (existing.find(TOML_BEGIN), existing.find(TOML_END)) {
+        (Some(start), Some(end)) if end > start => {
+            let after = end + TOML_END.len();
+            format!("{}{}{}", &existing[..start], block, &existing[after..])
+        }
+        _ => {
+            let mut text = existing.trim_end().to_string();
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(&block);
+            text.push('\n');
+            text
+        }
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
+    }
+    fs::write(path, next).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    Ok(names.into_iter().cloned().collect())
+}
+
+fn strip_toml_block(path: &Path) -> Result<(), String> {
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    if let (Some(start), Some(end)) = (existing.find(TOML_BEGIN), existing.find(TOML_END)) {
+        if end > start {
+            let after = end + TOML_END.len();
+            let next = format!("{}{}", existing[..start].trim_end(), &existing[after..]);
+            fs::write(path, format!("{}\n", next.trim()))
+                .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy the canonical servers into every agent config Kilgharrah serves. The
+/// canonical file stays the one place a server is defined.
+fn mirror_mcp() -> Result<(), String> {
+    let canonical = read_mcp();
+    let Some(servers) = canonical
+        .get("mcpServers")
+        .and_then(|value| value.as_object())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let mut settings = read_settings();
+    let previous_state = settings.mirror_state.clone();
+    let mut next_state = BTreeMap::new();
+    for (id, path) in mirror_targets(&settings) {
+        if path == mcp_path() {
+            continue;
+        }
+        let key = path.display().to_string();
+        let previous = previous_state.get(&key).cloned().unwrap_or_default();
+        let written = if id == "codex" {
+            mirror_toml(&path, &servers)?
+        } else {
+            mirror_json(&path, &servers, &previous)?
+        };
+        next_state.insert(key, written);
+    }
+    // An agent that was turned off keeps its config file, but not our entries.
+    let empty = serde_json::Map::new();
+    for (key, names) in &previous_state {
+        if next_state.contains_key(key) {
+            continue;
+        }
+        let path = PathBuf::from(key);
+        if !path.exists() {
+            continue;
+        }
+        if key.ends_with(".toml") {
+            strip_toml_block(&path)?;
+        } else {
+            mirror_json(&path, &empty, names)?;
+        }
+    }
+    if next_state != previous_state {
+        settings.mirror_state = next_state;
+        write_settings(&settings)?;
+    }
+    Ok(())
 }
 
 // The marketplace lives behind the network, so the command runs off the webview
@@ -1420,6 +2725,73 @@ fn install_market(
     Ok(id)
 }
 
+/// Downloads one published ClawHub version into `dir` and returns the version.
+/// The caller owns the folder and removes it if this fails.
+fn download_clawhub(
+    slug: &str,
+    owner: &str,
+    dir: &Path,
+    progress: &dyn Fn(u8, &str),
+) -> Result<String, String> {
+    let owner_query = if owner.is_empty() {
+        String::new()
+    } else {
+        format!("?owner={}", encode(owner))
+    };
+    let owner_suffix = if owner.is_empty() {
+        String::new()
+    } else {
+        format!("&owner={}", encode(owner))
+    };
+    let meta = get_json(&format!("{BASE}/api/v1/skills/{}{owner_query}", encode(slug)))?;
+    let version = meta
+        .get("latestVersion")
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_str())
+        .ok_or("ClawHub has no published version for that skill.")?
+        .to_string();
+    let detail = get_json(&format!(
+        "{BASE}/api/v1/skills/{}/versions/{}{owner_query}",
+        encode(slug),
+        encode(&version)
+    ))?;
+    let files = detail
+        .get("version")
+        .and_then(|v| v.get("files"))
+        .and_then(|v| v.as_array())
+        .ok_or("ClawHub returned no file list for that version.")?;
+    if files.len() > MAX_FILES {
+        return Err("That skill has too many files for Kilgharrah to install.".into());
+    }
+    let file_count = files.len().max(1) as u8;
+    let mut total: u64 = 0;
+    for (index, file) in files.iter().enumerate() {
+        let Some(relative) = file.get("path").and_then(|v| v.as_str()).and_then(safe_relative) else {
+            return Err("ClawHub listed a file path Kilgharrah will not write.".into());
+        };
+        let done = (index as u32 + 1).min(file_count as u32);
+        let percent = 14 + (done * 68 / file_count as u32).min(68) as u8;
+        progress(percent, "Fetching skill files");
+        let url = format!(
+            "{BASE}/api/v1/skills/{}/file?path={}&version={}{owner_suffix}",
+            encode(slug),
+            encode(&relative.to_string_lossy()),
+            encode(&version)
+        );
+        let bytes = get_bytes(&url)?;
+        total += bytes.len() as u64;
+        if total > MAX_BYTES {
+            return Err("That skill is larger than the 12 MB install limit.".into());
+        }
+        let target = dir.join(&relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Could not create a folder: {e}"))?;
+        }
+        fs::write(&target, bytes).map_err(|e| format!("Could not write a skill file: {e}"))?;
+    }
+    Ok(version)
+}
+
 fn install_market_task(
     slug: &str,
     owner: Option<String>,
@@ -1433,81 +2805,43 @@ fn install_market_task(
     }
     progress(6, "Reading the skill");
     let owner = owner.unwrap_or_default().trim().to_string();
-    let owner_query = if owner.is_empty() {
-        String::new()
-    } else {
-        format!("?owner={}", encode(&owner))
-    };
-    let owner_suffix = if owner.is_empty() {
-        String::new()
-    } else {
-        format!("&owner={}", encode(&owner))
-    };
-    let meta = get_json(&format!("{BASE}/api/v1/skills/{}{owner_query}", encode(slug)))?;
-    let version = meta
-        .get("latestVersion")
-        .and_then(|v| v.get("version"))
-        .and_then(|v| v.as_str())
-        .ok_or("ClawHub has no published version for that skill.")?
-        .to_string();
-    let detail = get_json(&format!(
-        "{BASE}/api/v1/skills/{}/versions/{}{owner_query}",
-        encode(&slug),
-        encode(&version)
-    ))?;
-    let files = detail
-        .get("version")
-        .and_then(|v| v.get("files"))
-        .and_then(|v| v.as_array())
-        .ok_or("ClawHub returned no file list for that version.")?;
-    if files.len() > MAX_FILES {
-        return Err("That skill has too many files for Kilgharrah to install.".into());
-    }
-    let file_count = files.len().max(1) as u8;
-    let chosen = match category {
-        Some(id) if safe_segment(&id) && skills_store().join(&id).is_dir() => id,
-        _ => suggest_category(&meta),
+    let chosen = {
+        let meta = get_json(&format!(
+            "{BASE}/api/v1/skills/{}{}",
+            encode(slug),
+            if owner.is_empty() { String::new() } else { format!("?owner={}", encode(&owner)) }
+        ))?;
+        match category {
+            Some(id) if safe_segment(&id) && skills_store().join(&id).is_dir() => id,
+            _ => suggest_category(&meta),
+        }
     };
     let dir = skills_store().join(&chosen).join(slug);
     if dir.exists() {
         return Err(format!("{slug} is already installed in {chosen}."));
     }
     fs::create_dir_all(&dir).map_err(|e| format!("Could not create the skill folder: {e}"))?;
-
-    let mut total: u64 = 0;
-    for (index, file) in files.iter().enumerate() {
-        let Some(relative) = file.get("path").and_then(|v| v.as_str()).and_then(safe_relative) else {
+    let version = match download_clawhub(slug, &owner, &dir, progress) {
+        Ok(version) => version,
+        Err(error) => {
             let _ = fs::remove_dir_all(&dir);
-            return Err("ClawHub listed a file path Kilgharrah will not write.".into());
-        };
-        let percent = 14 + ((index as u8 + 1) * 68 / file_count).min(68);
-        progress(percent, "Fetching skill files");
-        let url = format!(
-            "{BASE}/api/v1/skills/{}/file?path={}&version={}{owner_suffix}",
-            encode(slug),
-            encode(&relative.to_string_lossy()),
-            encode(&version)
-        );
-        let bytes = match get_bytes(&url) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&dir);
-                return Err(error);
-            }
-        };
-        total += bytes.len() as u64;
-        if total > MAX_BYTES {
-            let _ = fs::remove_dir_all(&dir);
-            return Err("That skill is larger than the 12 MB install limit.".into());
+            return Err(error);
         }
-        let target = dir.join(&relative);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Could not create a folder: {e}"))?;
-        }
-        if let Err(error) = fs::write(&target, bytes) {
-            let _ = fs::remove_dir_all(&dir);
-            return Err(format!("Could not write a skill file: {error}"));
-        }
+    };
+    if let Err(error) = write_meta(
+        &dir,
+        &InstalledMeta {
+            name: slug.to_string(),
+            origin: "clawhub".into(),
+            upstream: if owner.is_empty() { None } else { Some(owner.clone()) },
+            version: Some(version),
+            installed_at: now_secs(),
+            hash: hash_skill(&dir),
+            profile: None,
+        },
+    ) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(error);
     }
     progress(92, "Linking the skill");
     if let Err(error) = link_skill(slug, &dir) {
@@ -1616,6 +2950,25 @@ fn install_agentic(
         let _ = fs::remove_dir_all(&dir);
         return Err("That skill has no files to install.".into());
     }
+    if !dir.join("SKILL.md").is_file() {
+        let _ = fs::remove_dir_all(&dir);
+        return Err("That skill has no SKILL.md at its GitHub source.".into());
+    }
+    if let Err(error) = write_meta(
+        &dir,
+        &InstalledMeta {
+            name: slug.to_string(),
+            origin: "agentic".into(),
+            upstream: Some(format!("{}/{}/{}", source.owner, source.repo, source.path)),
+            version: None,
+            installed_at: now_secs(),
+            hash: hash_skill(&dir),
+            profile: None,
+        },
+    ) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(error);
+    }
     progress(94, "Linking the skill");
     if let Err(error) = link_skill(slug, &dir) {
         let _ = fs::remove_dir_all(&dir);
@@ -1720,23 +3073,372 @@ fn write_skill_file(
     build_state()
 }
 
+fn enabled_store_dirs() -> Vec<(String, PathBuf)> {
+    let mut candidates = Vec::new();
+    collect_skills(skills_store(), "store", &mut candidates);
+    candidates
+        .into_iter()
+        .filter_map(|(dir, _, _)| {
+            let slug = dir.file_name().and_then(|n| n.to_str())?.to_string();
+            if is_enabled(&slug) {
+                Some((slug, dir))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
-fn import_hermes(category: String, slug: String, target: String) -> Result<AppState, String> {
+fn set_agent_targets(targets: Vec<String>) -> Result<AppState, String> {
     ensure_store()?;
-    if !safe_segment(&target) || !skills_store().join(&target).is_dir() {
-        return Err("Pick one of the store categories.".into());
+    let before = read_settings();
+    let mut chosen: Vec<String> = Vec::new();
+    for (id, _, _) in AGENT_TARGETS {
+        if targets.iter().any(|value| value == id) && !chosen.iter().any(|value| value == id) {
+            chosen.push(id.to_string());
+        }
     }
-    let from = skill_dir("hermes", &category, &slug)?;
-    let to = skills_store().join(&target).join(&slug);
-    if to.exists() {
-        return Err(format!("{slug} is already in {target}."));
+    let mut next = before.clone();
+    next.agent_targets = chosen.clone();
+    write_settings(&next)?;
+
+    let enabled = enabled_store_dirs();
+    for (id, _, relative) in AGENT_TARGETS {
+        let root = target_root(relative);
+        if !chosen.iter().any(|value| value == id) {
+            if before.agent_targets.iter().any(|value| value == id) {
+                for (slug, _) in &enabled {
+                    unlink_from(&root, slug);
+                }
+            }
+            continue;
+        }
+        for (slug, dir) in &enabled {
+            let _ = link_into(&root, slug, dir);
+        }
     }
-    copy_dir(&from, &to).map_err(|e| format!("Could not copy the skill: {e}"))?;
-    if let Err(error) = link_skill(&slug, &to) {
-        let _ = fs::remove_dir_all(&to);
+    mirror_mcp()?;
+    build_state()
+}
+
+#[tauri::command(async)]
+fn check_updates() -> Result<Vec<SkillUpdate>, String> {
+    let mut updates = Vec::new();
+    for skill in scan_skills().into_iter().filter(|skill| skill.source == "store") {
+        let Some(meta) = read_meta(Path::new(&skill.path)) else {
+            updates.push(SkillUpdate {
+                category: skill.category,
+                slug: skill.slug,
+                name: skill.name,
+                origin: "unknown".into(),
+                current: None,
+                latest: None,
+                status: "unknown".into(),
+                detail: "Installed before Kilgharrah recorded installs, so there is no source to check."
+                    .into(),
+            });
+            continue;
+        };
+        if meta.origin != "clawhub" {
+            updates.push(SkillUpdate {
+                category: skill.category,
+                slug: skill.slug,
+                name: skill.name,
+                origin: meta.origin,
+                current: meta.version,
+                latest: None,
+                status: "unknown".into(),
+                detail: "Kilgharrah has no update feed for this source.".into(),
+            });
+            continue;
+        }
+        let owner = meta.upstream.clone().unwrap_or_default();
+        let url = format!(
+            "{BASE}/api/v1/skills/{}{}",
+            encode(&skill.slug),
+            if owner.is_empty() { String::new() } else { format!("?owner={}", encode(&owner)) }
+        );
+        match get_json(&url) {
+            Ok(value) => {
+                let latest = value
+                    .get("latestVersion")
+                    .and_then(|v| v.get("version"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let available = match (&meta.version, &latest) {
+                    (Some(current), Some(next)) => current != next,
+                    _ => false,
+                };
+                updates.push(SkillUpdate {
+                    category: skill.category,
+                    slug: skill.slug,
+                    name: skill.name,
+                    origin: meta.origin,
+                    current: meta.version,
+                    latest: latest.clone(),
+                    status: if available { "available" } else { "current" }.into(),
+                    detail: if available {
+                        format!("Version {} is published.", latest.unwrap_or_default())
+                    } else {
+                        "You have the latest published version.".into()
+                    },
+                });
+            }
+            Err(error) => updates.push(SkillUpdate {
+                category: skill.category,
+                slug: skill.slug,
+                name: skill.name,
+                origin: meta.origin,
+                current: meta.version,
+                latest: None,
+                status: "error".into(),
+                detail: error,
+            }),
+        }
+    }
+    Ok(updates)
+}
+
+fn update_skill_inner(category: &str, slug: &str) -> Result<AppState, String> {
+    ensure_store()?;
+    if !safe_segment(&category) || !safe_segment(&slug) {
+        return Err("That skill path is not valid.".into());
+    }
+    let dir = skills_store().join(category).join(slug);
+    if !dir.is_dir() {
+        return Err("That skill is not in the library.".into());
+    }
+    let meta = read_meta(&dir).ok_or("Kilgharrah has no install record for that skill.")?;
+    if meta.origin != "clawhub" {
+        return Err("Kilgharrah can only update skills that came from ClawHub.".into());
+    }
+    let temp_root = store_root().join(".tmp");
+    fs::create_dir_all(&temp_root)
+        .map_err(|e| format!("Could not create the update folder: {e}"))?;
+    let stamp = format!("{}-{}", slug, std::process::id());
+    let temp = temp_root.join(&stamp);
+    let backup = temp_root.join(format!("{stamp}-old"));
+    let _ = fs::remove_dir_all(&temp);
+    let _ = fs::remove_dir_all(&backup);
+    fs::create_dir_all(&temp).map_err(|e| format!("Could not create the update folder: {e}"))?;
+    let owner = meta.upstream.clone().unwrap_or_default();
+    let version = match download_clawhub(slug, &owner, &temp, &|_, _| {}) {
+        Ok(version) => version,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&temp);
+            return Err(error);
+        }
+    };
+    if let Err(error) = write_meta(
+        &temp,
+        &InstalledMeta {
+            name: meta.name.clone(),
+            origin: "clawhub".into(),
+            upstream: meta.upstream.clone(),
+            version: Some(version),
+            installed_at: now_secs(),
+            hash: hash_skill(&temp),
+            profile: meta.profile.clone(),
+        },
+    ) {
+        let _ = fs::remove_dir_all(&temp);
         return Err(error);
     }
+    let was_enabled = is_enabled(slug);
+    unlink_skill(slug);
+    fs::rename(&dir, &backup).map_err(|e| format!("Could not move the old copy aside: {e}"))?;
+    if let Err(error) = fs::rename(&temp, &dir) {
+        let _ = fs::rename(&backup, &dir);
+        return Err(format!("Could not finish the update: {error}"));
+    }
+    let _ = fs::remove_dir_all(&backup);
+    let _ = fs::remove_dir(&temp_root);
+    if was_enabled {
+        link_skill(slug, &dir)?;
+    }
     build_state()
+}
+
+#[tauri::command(async)]
+fn update_skill(category: String, slug: String) -> Result<AppState, String> {
+    update_skill_inner(&category, &slug)
+}
+
+/// Update every skill that has a newer published version. One failure does not
+/// stop the run.
+#[tauri::command(async)]
+fn update_all_skills() -> Result<UpdateReport, String> {
+    let updates = check_updates()?;
+    let mut updated = 0usize;
+    let mut failed = Vec::new();
+    for entry in updates.iter().filter(|entry| entry.status == "available") {
+        match update_skill_inner(&entry.category, &entry.slug) {
+            Ok(_) => updated += 1,
+            Err(error) => failed.push(format!("{}: {}", entry.name, error)),
+        }
+    }
+    Ok(UpdateReport {
+        state: build_state()?,
+        updated,
+        failed,
+    })
+}
+
+/// Record where a skill came from, so an unknown source can be fixed by hand.
+#[tauri::command]
+fn set_skill_source(category: String, slug: String, owner: String) -> Result<AppState, String> {
+    ensure_store()?;
+    if !safe_segment(&category) || !safe_segment(&slug) {
+        return Err("That skill path is not valid.".into());
+    }
+    let dir = skills_store().join(&category).join(&slug);
+    if !dir.is_dir() {
+        return Err("That skill is not in the library.".into());
+    }
+    let mut meta = read_meta(&dir).ok_or("Kilgharrah has no install record for that skill.")?;
+    let owner = owner.trim().trim_start_matches('@').to_string();
+    if owner.is_empty() {
+        meta.origin = "local".into();
+        meta.upstream = None;
+    } else if safe_segment(&owner) {
+        meta.origin = "clawhub".into();
+        meta.upstream = Some(owner);
+    } else {
+        return Err("Use a ClawHub owner name, letters, numbers and hyphens only.".into());
+    }
+    write_meta(&dir, &meta)?;
+    build_state()
+}
+
+#[tauri::command]
+fn diagnostics() -> Result<Diagnostics, String> {
+    ensure_store()?;
+    let mut checks = Vec::new();
+
+    let probe = store_root().join(".write-probe");
+    let store_ok = fs::write(&probe, b"ok").is_ok() && fs::remove_file(&probe).is_ok();
+    checks.push(Check {
+        id: "store".into(),
+        label: "Library is writable".into(),
+        status: if store_ok { "ok" } else { "error" }.into(),
+        detail: store_root().display().to_string(),
+    });
+
+    let link_probe = links_root().join(".write-probe");
+    let links_ok = fs::create_dir_all(links_root()).is_ok()
+        && fs::write(&link_probe, b"ok").is_ok()
+        && fs::remove_file(&link_probe).is_ok();
+    checks.push(Check {
+        id: "links".into(),
+        label: "CLI skills folder is writable".into(),
+        status: if links_ok { "ok" } else { "error" }.into(),
+        detail: links_root().display().to_string(),
+    });
+
+    let mcp = mcp_path();
+    if !mcp.exists() {
+        checks.push(Check {
+            id: "mcp".into(),
+            label: "MCP config".into(),
+            status: "ok".into(),
+            detail: "No mcp.json yet. Kilgharrah creates one when you add a server.".into(),
+        });
+    } else {
+        let parsed = fs::read_to_string(&mcp)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        checks.push(Check {
+            id: "mcp".into(),
+            label: "MCP config parses".into(),
+            status: if parsed.is_some() { "ok" } else { "error" }.into(),
+            detail: mcp.display().to_string(),
+        });
+    }
+
+    let mut roots = vec![links_root()];
+    for (_, _, root) in enabled_targets() {
+        roots.push(root);
+    }
+    let mut links = 0usize;
+    let mut broken: Vec<String> = Vec::new();
+    for root in roots {
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            links += 1;
+            let is_link = fs::symlink_metadata(&path)
+                .map(|meta| meta.file_type().is_symlink())
+                .unwrap_or(false);
+            if is_link && fs::metadata(&path).is_err() {
+                broken.push(entry.file_name().to_string_lossy().to_string());
+            }
+        }
+    }
+    checks.push(Check {
+        id: "broken-links".into(),
+        label: "Enabled links resolve".into(),
+        status: if broken.is_empty() { "ok" } else { "warn" }.into(),
+        detail: if broken.is_empty() {
+            format!("{links} links, none broken")
+        } else {
+            format!("{} broken: {}", broken.len(), broken.iter().take(3).cloned().collect::<Vec<_>>().join(", "))
+        },
+    });
+
+    let skills = scan_skills();
+    let unmanaged: Vec<&Skill> = skills
+        .iter()
+        .filter(|skill| skill.source == "store" && skill.origin == "unknown")
+        .collect();
+    checks.push(Check {
+        id: "records".into(),
+        label: "Library skills know where they came from".into(),
+        status: if unmanaged.is_empty() { "ok" } else { "warn" }.into(),
+        detail: if unmanaged.is_empty() {
+            format!("{} skills recorded", skills.iter().filter(|s| s.source == "store").count())
+        } else {
+            format!(
+                "{} recorded without a known source: {}",
+                unmanaged.len(),
+                unmanaged.iter().take(3).map(|s| s.slug.clone()).collect::<Vec<_>>().join(", ")
+            )
+        },
+    });
+
+    let modified: Vec<&Skill> = skills.iter().filter(|skill| skill.modified).collect();
+    checks.push(Check {
+        id: "modified".into(),
+        label: "Skill files match their records".into(),
+        status: if modified.is_empty() { "ok" } else { "warn" }.into(),
+        detail: if modified.is_empty() {
+            "No installed skill has changed since it was recorded.".into()
+        } else {
+            format!(
+                "{} edited since install: {}",
+                modified.len(),
+                modified.iter().take(3).map(|s| s.slug.clone()).collect::<Vec<_>>().join(", ")
+            )
+        },
+    });
+
+    let targets = agent_target_state();
+    let on = targets.iter().filter(|t| t.enabled).count();
+    checks.push(Check {
+        id: "agents".into(),
+        label: "Agent mirrors".into(),
+        status: "ok".into(),
+        detail: if on == 0 {
+            "No agent mirrors are on. The main agent still gets every enabled skill.".into()
+        } else {
+            format!("{on} of 3 mirrors on: {}", targets.iter().filter(|t| t.enabled).map(|t| t.name.clone()).collect::<Vec<_>>().join(", "))
+        },
+    });
+
+    let ok = !checks.iter().any(|check| check.status == "error");
+    Ok(Diagnostics { ok, checks, checked_at: now_secs() })
 }
 
 #[tauri::command]
@@ -1790,7 +3492,16 @@ fn main() {
             list_skill_files,
             read_skill_file,
             write_skill_file,
-            import_hermes,
+            set_agent_targets,
+            check_updates,
+            update_skill,
+            update_all_skills,
+            set_skill_source,
+            complete_setup,
+            export_profile,
+            apply_profile,
+            delete_profile,
+            diagnostics,
             open_url,
             reveal_store
         ])
@@ -1881,6 +3592,76 @@ mod tests {
     }
 
     #[test]
+    fn state_backfills_records_and_lists_agent_targets() {
+        let root = std::env::temp_dir().join(format!("kilgharrah-state-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let skill = root.join("kilgharrah/skills/design/legacy");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "---\nname: Legacy\n---\n\nBody\n").unwrap();
+        std::env::set_var("KILGHARRAH_HOME", &root);
+
+        let state = build_state().unwrap();
+        let legacy = state.skills.iter().find(|s| s.slug == "legacy").unwrap();
+        assert_eq!(legacy.origin, "unknown");
+        assert!(legacy.installed_at > 0, "the record gets a baseline time");
+        assert!(read_meta(&skill).is_some(), "a baseline record is written");
+        assert_eq!(state.agent_targets.len(), 3);
+        assert!(state.agent_targets.iter().all(|target| !target.enabled));
+
+        std::env::remove_var("KILGHARRAH_HOME");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_records_round_trip_and_hash_ignores_meta() {
+        let root = std::env::temp_dir().join(format!("kilgharrah-meta-{}", std::process::id()));
+        let dir = root.join("demo");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), "---\nname: Demo\n---\n\nBody\n").unwrap();
+
+        let first = hash_skill(&dir);
+        write_meta(
+            &dir,
+            &InstalledMeta {
+                name: "Demo".into(),
+                origin: "clawhub".into(),
+                upstream: Some("owner".into()),
+                version: Some("1.2.0".into()),
+                installed_at: 10,
+                hash: first.clone(),
+                profile: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(hash_skill(&dir), first, "the record does not change the hash");
+        assert_eq!(count_files(&dir, 3), 1, "the record is not counted as a skill file");
+        let record = read_meta(&dir).expect("record reads back");
+        assert_eq!(record.origin, "clawhub");
+        assert_eq!(record.version.as_deref(), Some("1.2.0"));
+
+        fs::write(dir.join("SKILL.md"), "---\nname: Demo\n---\n\nEdited\n").unwrap();
+        assert_ne!(hash_skill(&dir), first, "editing a file changes the hash");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disabling_removes_a_copied_skill_folder() {
+        let root = std::env::temp_dir().join(format!("kilgharrah-unlink-{}", std::process::id()));
+        let link = root.join("demo");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&link).unwrap();
+        fs::write(link.join("SKILL.md"), "Body\n").unwrap();
+
+        unlink_from(&root, "demo");
+        assert!(!link.exists(), "a copied folder is removed on disable");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn hermes_skills_are_scanned_and_deduped() {
         let root = std::env::temp_dir().join(format!("kilgharrah-scan-{}", std::process::id()));
         let store = root.join("store");
@@ -1902,6 +3683,105 @@ mod tests {
         assert_eq!(p5.source, "hermes");
         assert_eq!(p5.category, "creative");
         assert_eq!(p5.id, "hermes:creative:p5js");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn github_urls_split_into_a_repo_and_optional_folder() {
+        let plain = github_parts("https://github.com/morluto/rea").unwrap();
+        assert_eq!(plain, ("morluto".into(), "rea".into(), None));
+
+        let nested = github_parts("https://github.com/squirrelscan/skills/tree/main/skills/audit-website")
+            .unwrap();
+        assert_eq!(nested.0, "squirrelscan");
+        assert_eq!(nested.1, "skills");
+        assert_eq!(nested.2, Some(("main".into(), "skills/audit-website".into())));
+
+        let root = github_parts("https://github.com/owner/repo/tree/main").unwrap();
+        assert_eq!(root.2, Some(("main".into(), String::new())));
+
+        assert!(github_parts("https://github.com/owner").is_none());
+    }
+
+    #[test]
+    fn profiles_are_deleted_by_name() {
+        let dir = std::env::temp_dir().join(format!("kilgharrah-profiles-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let profile = Profile {
+            name: "Test Profile".into(),
+            created_at: 1,
+            skills: vec![],
+            servers: vec![],
+        };
+        let path = dir.join("test-profile.json");
+        fs::write(&path, serde_json::to_string_pretty(&profile).unwrap()).unwrap();
+
+        let removed = remove_profile_file(&dir, "test profile").expect("a slug match deletes");
+        assert_eq!(removed, path);
+        assert!(!path.exists());
+
+        assert!(
+            remove_profile_file(&dir, "Test Profile").is_err(),
+            "a deleted profile is no longer found"
+        );
+        assert!(
+            delete_profile("Hermes".into()).is_err(),
+            "the built-in profile is protected"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mirror_json_keeps_foreign_servers_and_drops_stale_ones() {
+        let root = std::env::temp_dir().join(format!("kilgharrah-mirror-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.json");
+        fs::write(
+            &path,
+            r#"{"theme":"dark","mcpServers":{"mine":{"command":"own"},"old":{"command":"gone"}}}"#,
+        )
+        .unwrap();
+
+        let mut servers = serde_json::Map::new();
+        servers.insert("next".into(), json!({ "command": "npx", "args": ["-y", "pkg"] }));
+        let written = mirror_json(&path, &servers, &["old".to_string()]).unwrap();
+
+        let value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["theme"], "dark", "unrelated keys stay");
+        assert!(value["mcpServers"]["mine"].is_object(), "user servers stay");
+        assert!(value["mcpServers"]["old"].is_null(), "our stale copy is removed");
+        assert_eq!(value["mcpServers"]["next"]["command"], "npx");
+        assert_eq!(written, vec!["next".to_string()]);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mirror_toml_replaces_its_block_once() {
+        let root = std::env::temp_dir().join(format!("kilgharrah-toml-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.toml");
+        fs::write(&path, "model = \"gpt\"\n").unwrap();
+
+        let mut servers = serde_json::Map::new();
+        servers.insert(
+            "pg".into(),
+            json!({ "command": "npx", "args": ["-y", "pg"], "env": { "DSN": "a b" } }),
+        );
+        mirror_toml(&path, &servers).unwrap();
+        mirror_toml(&path, &servers).unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("model = \"gpt\""), "existing config stays first");
+        assert_eq!(text.matches(TOML_BEGIN).count(), 1, "the block is not duplicated");
+        assert!(text.contains("[mcp_servers.pg]"));
+        assert!(text.contains("args = [\"-y\", \"pg\"]"));
+        assert!(text.contains("DSN = \"a b\""));
 
         let _ = fs::remove_dir_all(&root);
     }

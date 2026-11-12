@@ -36,7 +36,7 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "category": "DeveloperTool",
-    "shortDescription": "Skills and MCP manager for the Freebuff CLI",
+    "shortDescription": "Skills and MCP manager for CLI agents",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

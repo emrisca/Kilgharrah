@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppState, CatalogItem, MarketSource, SkillFile, SkillSource } from "./types";
+import type {
+  AppState,
+  CatalogItem,
+  Diagnostics,
+  MarketSource,
+  SkillFile,
+  SkillSource,
+  SkillUpdate,
+  UpdateReport
+} from "./types";
 
 export const api = {
   snapshot: () => invoke<AppState>("snapshot"),
@@ -25,8 +34,37 @@ export const api = {
   writeSkillFile: (category: string, slug: string, path: string, content: string) =>
     invoke<AppState>("write_skill_file", { category, slug, path, content }),
 
-  importHermes: (category: string, slug: string, target: string) =>
-    invoke<AppState>("import_hermes", { category, slug, target }),
+  setAgentTargets: (targets: string[]) =>
+    invoke<AppState>("set_agent_targets", { targets }),
+
+  checkUpdates: () => invoke<SkillUpdate[]>("check_updates"),
+
+  updateSkill: (category: string, slug: string) =>
+    invoke<AppState>("update_skill", { category, slug }),
+
+  updateAllSkills: () => invoke<UpdateReport>("update_all_skills"),
+
+  setSkillSource: (category: string, slug: string, owner: string) =>
+    invoke<AppState>("set_skill_source", { category, slug, owner }),
+
+  completeSetup: (input: {
+    projectRoot: string | null;
+    agent: string;
+    profile: string | null;
+  }) =>
+    invoke<AppState>("complete_setup", {
+      projectRoot: input.projectRoot,
+      agent: input.agent,
+      profile: input.profile
+    }),
+
+  exportProfile: (name: string) => invoke<string>("export_profile", { name }),
+
+  applyProfile: (name: string) => invoke<AppState>("apply_profile", { name }),
+
+  deleteProfile: (name: string) => invoke<AppState>("delete_profile", { name }),
+
+  diagnostics: () => invoke<Diagnostics>("diagnostics"),
 
   saveServer: (input: { name: string; command: string; args: string[]; env: string[] }) =>
     invoke<AppState>("save_server", input),
