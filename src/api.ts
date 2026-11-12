@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppState, CatalogItem, SkillFile, SkillSource } from "./types";
+import type { AppState, CatalogItem, MarketSource, SkillFile, SkillSource } from "./types";
 
 export const api = {
   snapshot: () => invoke<AppState>("snapshot"),
@@ -36,11 +36,15 @@ export const api = {
   searchMarket: (query: string, limit = 24) =>
     invoke<CatalogItem[]>("search_market", { query, limit }),
 
-  previewMarket: (slug: string, owner?: string) =>
-    invoke<string>("preview_market", { slug, owner: owner ?? null }),
+  previewMarket: (slug: string, owner: string | null, market: MarketSource) =>
+    invoke<string>("preview_market", { slug, owner, market }),
 
-  installMarket: (slug: string, owner: string | null, category: string | null) =>
-    invoke<AppState>("install_market", { slug, owner, category }),
+  installMarket: (
+    slug: string,
+    owner: string | null,
+    category: string | null,
+    market: MarketSource
+  ) => invoke<AppState>("install_market", { slug, owner, category, market }),
 
   openUrl: (url: string) => invoke<void>("open_url", { url }),
 

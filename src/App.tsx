@@ -8,7 +8,10 @@ import { SettingsView } from "./components/SettingsView";
 import { Icon } from "./components/Icons";
 
 type Theme = "dark" | "light";
+export type Palette = "aurora" | "ember" | "tide" | "orchid" | "rose";
 const THEME_KEY = "kilgharrah.theme";
+const PALETTE_KEY = "kilgharrah.palette";
+const PALETTES: Palette[] = ["aurora", "ember", "tide", "orchid", "rose"];
 
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
@@ -20,12 +23,21 @@ export default function App() {
     if (saved === "dark" || saved === "light") return saved;
     return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   });
+  const [palette, setPalette] = useState<Palette>(() => {
+    const saved = localStorage.getItem(PALETTE_KEY) as Palette | null;
+    return saved && PALETTES.includes(saved) ? saved : "aurora";
+  });
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(THEME_KEY, theme);
     getCurrentWindow().setTheme(theme).catch(() => {});
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.dataset.palette = palette;
+    localStorage.setItem(PALETTE_KEY, palette);
+  }, [palette]);
 
   useEffect(() => {
     if (!toast) return;
@@ -115,6 +127,8 @@ export default function App() {
             state={state}
             theme={theme}
             onTheme={setTheme}
+            palette={palette}
+            onPalette={setPalette}
             notify={setToast}
             onError={(message) => setError(message)}
           />

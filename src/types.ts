@@ -44,6 +44,8 @@ export type AppState = {
   servers: McpServer[];
 };
 
+export type MarketSource = "clawhub" | "agentic" | "both";
+
 export type CatalogItem = {
   id: string;
   kind: "skill" | "plugin" | "bundle";
@@ -53,6 +55,10 @@ export type CatalogItem = {
   summary: string;
   version: string;
   downloads: number;
+  stars: number;
+  rank: number;
+  grade: string;
+  market: MarketSource;
   category: string;
   topics: string[];
   installable: boolean;

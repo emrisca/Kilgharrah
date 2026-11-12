@@ -1,15 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, UNIX_EPOCH};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const BASE: &str = "https://clawhub.ai";
+const AGENTIC_BASE: &str = "https://agenticskills.io";
+const AGENTIC_TTL: Duration = Duration::from_secs(600);
 const MAX_FILES: usize = 200;
 const MAX_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_READ: u64 = 512 * 1024;
@@ -141,7 +145,7 @@ struct AppState {
     servers: Vec<McpServer>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct CatalogItem {
     id: String,
@@ -152,6 +156,10 @@ struct CatalogItem {
     summary: String,
     version: String,
     downloads: u64,
+    stars: u64,
+    rank: u32,
+    grade: String,
+    market: String,
     category: String,
     topics: Vec<String>,
     installable: bool,
@@ -689,6 +697,10 @@ fn skill_item(value: &Value) -> Option<CatalogItem> {
         summary,
         version,
         downloads,
+        stars: 0,
+        rank: 0,
+        grade: String::new(),
+        market: "clawhub".into(),
         category,
         topics,
         installable: true,
@@ -729,11 +741,311 @@ fn package_item(value: &Value) -> Option<CatalogItem> {
         summary,
         version,
         downloads,
+        stars: 0,
+        rank: 0,
+        grade: String::new(),
+        market: "clawhub".into(),
         category: "development".into(),
         topics: Vec::new(),
         installable: false,
         command: Some(format!("npm install {name}")),
     })
+}
+
+fn get_text(url: &str) -> Result<String, String> {
+    match http_agent().get(url).call() {
+        Ok(response) => response
+            .into_string()
+            .map_err(|e| format!("agenticskills.io sent a response Kilgharrah could not read: {e}")),
+        Err(ureq::Error::Status(code, response)) => {
+            let body = response.into_string().unwrap_or_default();
+            let message: String = body.chars().take(180).collect();
+            Err(format!("agenticskills.io returned {code}. {message}"))
+        }
+        Err(error) => Err(format!("Could not reach agenticskills.io: {error}")),
+    }
+}
+
+fn decode_entities(text: &str) -> String {
+    text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .trim()
+        .to_string()
+}
+
+fn parse_count(text: &str) -> u64 {
+    let trimmed = text.trim();
+    let factor = match trimmed.chars().last() {
+        Some('K') | Some('k') => 1_000f64,
+        Some('M') | Some('m') => 1_000_000f64,
+        _ => 1f64,
+    };
+    let digits: String = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    (digits.parse::<f64>().unwrap_or(0.0) * factor).round() as u64
+}
+
+/// agenticskills.io is server rendered and its API is private, so Kilgharrah
+/// reads the published cards. The site lists each skill once, already ranked.
+fn parse_rank_map(page: &str) -> HashMap<String, u32> {
+    let Ok(ranks_re) = Regex::new(r#""position":(\d+),"url":"https://agenticskills\.io/skills/([^"]+)""#)
+    else {
+        return HashMap::new();
+    };
+    ranks_re
+        .captures_iter(page)
+        .filter_map(|caps| {
+            Some((
+                caps.get(2)?.as_str().to_string(),
+                caps.get(1)?.as_str().parse().ok()?,
+            ))
+        })
+        .collect()
+}
+
+fn parse_agentic(page: &str, ranks: &HashMap<String, u32>) -> Vec<CatalogItem> {
+    let name_re = Regex::new(r#"<h3 class="[^"]*">([^<]+)</h3>"#).ok();
+    let author_re = Regex::new(r#"by<!-- -->\s*<span[^>]*>([^<]+)</span>"#).ok();
+    let grade_re = Regex::new(r#"([SABC])<!-- -->-rank"#).ok();
+    let summary_re = Regex::new(r#"line-clamp-2 mb-4">([^<]*)</p>"#).ok();
+    let category_re = Regex::new(
+        r#"<span class="text-\[10px\] font-mono uppercase tracking-\[0\.08em\][^"]*">([^<]+)</span>"#,
+    )
+    .ok();
+    let stars_re = Regex::new(
+        r#"text-\[11px\] text-\[var\(--mute-2\)\]"><svg[\s\S]*?</svg>([^<]+)</span>"#,
+    )
+    .ok();
+
+    let mut items = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for chunk in page
+        .split("<a class=\"group block h-full\" href=\"/skills/")
+        .skip(1)
+    {
+        let Some(slug_end) = chunk.find('"') else {
+            continue;
+        };
+        let slug = chunk[..slug_end].trim().to_string();
+        if slug.is_empty() || !safe_segment(&slug) || seen.iter().any(|value| value == &slug) {
+            continue;
+        }
+        seen.push(slug.clone());
+        let Some(name_re) = name_re.as_ref() else {
+            break;
+        };
+        let Some(name) = name_re.captures(chunk).and_then(|caps| caps.get(1)) else {
+            continue;
+        };
+        let name = decode_entities(name.as_str());
+        if name.is_empty() {
+            continue;
+        }
+        let author = author_re
+            .as_ref()
+            .and_then(|re| re.captures(chunk))
+            .and_then(|caps| caps.get(1).map(|m| decode_entities(m.as_str())))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "agenticskills".into());
+        let grade = grade_re
+            .as_ref()
+            .and_then(|re| re.captures(chunk))
+            .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+            .unwrap_or_default();
+        let summary = summary_re
+            .as_ref()
+            .and_then(|re| re.captures(chunk))
+            .and_then(|caps| caps.get(1).map(|m| decode_entities(m.as_str())))
+            .unwrap_or_default();
+        let site_category = category_re
+            .as_ref()
+            .and_then(|re| re.captures(chunk))
+            .and_then(|caps| caps.get(1).map(|m| decode_entities(m.as_str())))
+            .unwrap_or_default();
+        let stars = stars_re
+            .as_ref()
+            .and_then(|re| re.captures(chunk))
+            .and_then(|caps| caps.get(1).map(|m| parse_count(m.as_str())))
+            .unwrap_or(0);
+        let rank = ranks.get(&slug).copied().unwrap_or(0);
+        let category = bucket_for(&site_category.to_lowercase(), &name, &summary);
+        items.push(CatalogItem {
+            id: format!("agentic:{slug}"),
+            kind: "skill".into(),
+            owner: author,
+            slug,
+            name,
+            summary,
+            version: String::new(),
+            downloads: 0,
+            stars,
+            rank,
+            grade,
+            market: "agentic".into(),
+            category,
+            topics: Vec::new(),
+            installable: true,
+            command: None,
+        });
+    }
+    items
+}
+
+const AGENTIC_CATEGORIES: [&str; 16] = [
+    "agents",
+    "ai-ml",
+    "backend",
+    "data-science",
+    "database",
+    "design",
+    "devops",
+    "documents",
+    "marketing",
+    "mobile",
+    "official",
+    "productivity",
+    "security",
+    "seo",
+    "testing",
+    "web-development",
+];
+
+fn agentic_pages() -> Result<Vec<String>, String> {
+    let mut urls = vec![format!("{AGENTIC_BASE}/skills")];
+    for category in AGENTIC_CATEGORIES {
+        urls.push(format!("{AGENTIC_BASE}/category/{category}"));
+    }
+    let mut pages = Vec::new();
+    for group in urls.chunks(6) {
+        let fetched: Vec<Result<String, String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = group
+                .iter()
+                .map(|url| scope.spawn(move || get_text(url)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("Could not read agenticskills.io.".into()))
+                })
+                .collect()
+        });
+        for result in fetched {
+            if let Ok(page) = result {
+                pages.push(page);
+            }
+        }
+    }
+    if pages.is_empty() {
+        return Err("Could not reach agenticskills.io.".into());
+    }
+    Ok(pages)
+}
+
+fn agentic_pool() -> Result<Vec<CatalogItem>, String> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, Vec<CatalogItem>)>>> = OnceLock::new();
+    let lock = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = lock.lock() {
+        if let Some((at, items)) = guard.as_ref() {
+            if at.elapsed() < AGENTIC_TTL {
+                return Ok(items.clone());
+            }
+        }
+    }
+    match agentic_pages() {
+        Ok(pages) => {
+            let ranks = parse_rank_map(&pages[0]);
+            let mut seen: Vec<String> = Vec::new();
+            let mut items: Vec<CatalogItem> = Vec::new();
+            for page in &pages {
+                for item in parse_agentic(page, &ranks) {
+                    if seen.iter().any(|slug| slug.eq_ignore_ascii_case(&item.slug)) {
+                        continue;
+                    }
+                    seen.push(item.slug.clone());
+                    items.push(item);
+                }
+            }
+            if items.is_empty() {
+                return Err("agenticskills.io returned no skills.".into());
+            }
+            if let Ok(mut guard) = lock.lock() {
+                *guard = Some((Instant::now(), items.clone()));
+            }
+            Ok(items)
+        }
+        Err(error) => {
+            if let Ok(guard) = lock.lock() {
+                if let Some((_, items)) = guard.as_ref() {
+                    return Ok(items.clone());
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+struct AgenticSource {
+    owner: String,
+    repo: String,
+    git_ref: String,
+    path: String,
+    raw: String,
+}
+
+fn agentic_source(slug: &str) -> Result<AgenticSource, String> {
+    let page = get_text(&format!("{AGENTIC_BASE}/skills/{}", encode(slug)))?;
+    let re = Regex::new(
+        r#"https://raw\.githubusercontent\.com/([^/"\s]+)/([^/"\s]+)/([^/"\s]+)/([^"\s<]+?)/SKILL\.md"#,
+    )
+    .map_err(|e| format!("Could not read the install command: {e}"))?;
+    let caps = re
+        .captures(&page)
+        .ok_or("agenticskills.io lists no GitHub source for that skill.")?;
+    let owner = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+    let repo = caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
+    let git_ref = caps.get(3).map(|m| m.as_str().to_string()).unwrap_or_default();
+    let path = caps.get(4).map(|m| m.as_str().to_string()).unwrap_or_default();
+    if owner.is_empty() || repo.is_empty() || git_ref.is_empty() || path.is_empty() {
+        return Err("agenticskills.io lists an incomplete GitHub source for that skill.".into());
+    }
+    let raw = format!("https://raw.githubusercontent.com/{owner}/{repo}/{git_ref}/{path}/SKILL.md");
+    Ok(AgenticSource { owner, repo, git_ref, path, raw })
+}
+
+fn merge_items(items: Vec<CatalogItem>, limit: usize) -> Vec<CatalogItem> {
+    let mut out: Vec<CatalogItem> = Vec::new();
+    for item in items {
+        if let Some(existing) = out
+            .iter_mut()
+            .find(|entry| entry.slug.eq_ignore_ascii_case(&item.slug))
+        {
+            existing.downloads = existing.downloads.max(item.downloads);
+            existing.stars = existing.stars.max(item.stars);
+            if existing.grade.is_empty() {
+                existing.grade = item.grade.clone();
+            }
+            if existing.rank == 0 {
+                existing.rank = item.rank;
+            }
+            if item.market == "agentic" && existing.market != "agentic" {
+                existing.market = "both".into();
+            }
+            continue;
+        }
+        out.push(item);
+    }
+    out.sort_by(|a, b| b.downloads.cmp(&a.downloads).then(a.rank.cmp(&b.rank)));
+    out.truncate(limit);
+    out
 }
 
 fn suggest_category(meta: &Value) -> String {
@@ -942,10 +1254,12 @@ fn delete_server(name: String) -> Result<AppState, String> {
 fn search_market(query: String, limit: Option<u32>) -> Result<Vec<CatalogItem>, String> {
     let limit = limit.unwrap_or(24).clamp(1, 300) as usize;
     let query = query.trim().to_string();
+    let agentic = agentic_pool().unwrap_or_default();
     let mut items: Vec<CatalogItem> = Vec::new();
 
     if query.is_empty() {
         items = skill_pool(limit)?;
+        items.extend(agentic);
     } else {
         let encoded = encode(&query);
         let skills = get_json(&format!(
@@ -959,17 +1273,15 @@ fn search_market(query: String, limit: Option<u32>) -> Result<Vec<CatalogItem>, 
         if let Some(rows) = packages.get("results").and_then(|v| v.as_array()) {
             items.extend(rows.iter().filter_map(package_item));
         }
+        let needle = query.to_lowercase();
+        items.extend(agentic.into_iter().filter(|item| {
+            [&item.name, &item.summary, &item.owner, &item.category]
+                .iter()
+                .any(|field| field.to_lowercase().contains(&needle))
+        }));
     }
 
-    let mut unique: Vec<CatalogItem> = Vec::new();
-    for item in items {
-        if unique.iter().any(|existing| existing.id == item.id) {
-            continue;
-        }
-        unique.push(item);
-    }
-    unique.sort_by(|a, b| b.downloads.cmp(&a.downloads));
-    Ok(unique)
+    Ok(merge_items(items, limit))
 }
 
 fn skill_pool(limit: usize) -> Result<Vec<CatalogItem>, String> {
@@ -1001,9 +1313,19 @@ fn skill_pool(limit: usize) -> Result<Vec<CatalogItem>, String> {
 }
 
 #[tauri::command]
-fn preview_market(slug: String, owner: Option<String>) -> Result<String, String> {
+fn preview_market(
+    slug: String,
+    owner: Option<String>,
+    market: Option<String>,
+) -> Result<String, String> {
     if !safe_segment(&slug) {
         return Err("That skill name is not valid.".into());
+    }
+    if market.as_deref() == Some("agentic") {
+        let source = agentic_source(&slug)?;
+        let bytes = get_bytes(&source.raw)?;
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        return Ok(text.chars().take(PREVIEW_CHARS).collect());
     }
     let mut url = format!("{BASE}/api/v1/skills/{}/file?path=SKILL.md", encode(&slug));
     if let Some(owner) = owner.filter(|value| safe_segment(value)) {
@@ -1019,10 +1341,14 @@ fn install_market(
     slug: String,
     owner: Option<String>,
     category: Option<String>,
+    market: Option<String>,
 ) -> Result<AppState, String> {
     ensure_store()?;
     if !safe_segment(&slug) {
         return Err("That skill name is not valid.".into());
+    }
+    if market.as_deref() == Some("agentic") {
+        return install_agentic(&slug, category);
     }
     let owner = owner.unwrap_or_default().trim().to_string();
     let owner_query = if owner.is_empty() {
@@ -1099,6 +1425,102 @@ fn install_market(
         }
     }
     if let Err(error) = link_skill(&slug, &dir) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(error);
+    }
+    build_state()
+}
+
+fn collect_github(
+    source: &AgenticSource,
+    path: &str,
+    base: &str,
+    dir: &Path,
+    total: &mut u64,
+    files: &mut usize,
+) -> Result<(), String> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
+        encode(&source.owner),
+        encode(&source.repo),
+        encode(path),
+        encode(&source.git_ref)
+    );
+    let value = get_json(&url)?;
+    let rows = value
+        .as_array()
+        .ok_or("GitHub returned no contents for that skill folder.")?;
+    for row in rows {
+        let kind = row.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+        let child = row
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if kind == "dir" {
+            collect_github(source, &child, base, dir, total, files)?;
+            continue;
+        }
+        if kind != "file" {
+            continue;
+        }
+        let Some(relative) = child.strip_prefix(&format!("{base}/")) else {
+            continue;
+        };
+        let Some(relative) = safe_relative(relative) else {
+            return Err("GitHub listed a file path Kilgharrah will not write.".into());
+        };
+        *files += 1;
+        if *files > MAX_FILES {
+            return Err("That skill has too many files for Kilgharrah to install.".into());
+        }
+        let download = row
+            .get("download_url")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                format!(
+                    "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                    source.owner, source.repo, source.git_ref, child
+                )
+            });
+        let bytes = get_bytes(&download)?;
+        *total += bytes.len() as u64;
+        if *total > MAX_BYTES {
+            return Err("That skill is larger than the 12 MB install limit.".into());
+        }
+        let target = dir.join(&relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Could not create a folder: {e}"))?;
+        }
+        fs::write(&target, bytes).map_err(|e| format!("Could not write a skill file: {e}"))?;
+    }
+    Ok(())
+}
+
+fn install_agentic(slug: &str, category: Option<String>) -> Result<AppState, String> {
+    let source = agentic_source(slug)?;
+    let chosen = match category {
+        Some(id) if safe_segment(&id) && skills_store().join(&id).is_dir() => id,
+        _ => "other".to_string(),
+    };
+    let dir = skills_store().join(&chosen).join(slug);
+    if dir.exists() {
+        return Err(format!("{slug} is already installed in {chosen}."));
+    }
+    fs::create_dir_all(&dir).map_err(|e| format!("Could not create the skill folder: {e}"))?;
+    let base = source.path.clone();
+    let mut total = 0u64;
+    let mut files = 0usize;
+    if let Err(error) = collect_github(&source, &base, &base, &dir, &mut total, &mut files) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(error);
+    }
+    if files == 0 {
+        let _ = fs::remove_dir_all(&dir);
+        return Err("That skill has no files to install.".into());
+    }
+    if let Err(error) = link_skill(slug, &dir) {
         let _ = fs::remove_dir_all(&dir);
         return Err(error);
     }
@@ -1314,6 +1736,40 @@ mod tests {
         assert_eq!(bucket_for("figma tailwind", "Layout kit", "UI work"), "design");
         assert_eq!(bucket_for("", "News digest", "Search the web for news"), "research");
         assert_eq!(bucket_for("", "Quiet helper", "Nothing in particular"), "other");
+    }
+
+    #[test]
+    fn agentic_counts_follow_suffixes() {
+        assert_eq!(parse_count("445.8K"), 445_800);
+        assert_eq!(parse_count("1.2M"), 1_200_000);
+        assert_eq!(parse_count("87"), 87);
+        assert_eq!(parse_count(""), 0);
+    }
+
+    #[test]
+    fn agentic_cards_are_parsed() {
+        let page = r#"
+        <script type="application/ld+json">[{"position":4,"url":"https://agenticskills.io/skills/humanizer","name":"Humanizer"}]</script>
+        <div class="h-full"><a class="group block h-full" href="/skills/humanizer"><div class="relative h-full p-5">
+        <h3 class="text-sm font-semibold">Humanizer &amp; editor</h3>
+        <p class="text-xs">by<!-- --> <span class="text-[var(--mute-1)]">obra</span></p>
+        <span class="text-[10px] px-2">S<!-- -->-rank</span>
+        <p class="text-xs leading-relaxed line-clamp-2 mb-4">Strip the tells that make writing sound generated.</p>
+        <div class="flex items-center gap-2 mb-3"><span class="text-[10px] font-mono uppercase tracking-[0.08em] px-2">Writing</span><span class="text-[10px] font-mono uppercase tracking-[0.08em] px-2">Open Source</span></div>
+        <span class="flex items-center gap-1 text-[11px] text-[var(--mute-2)]"><svg><path d="M1 1"></path></svg>12.5K</span>
+        </div></a></div>"#;
+        let items = parse_agentic(page, &parse_rank_map(page));
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.slug, "humanizer");
+        assert_eq!(item.name, "Humanizer & editor");
+        assert_eq!(item.owner, "obra");
+        assert_eq!(item.grade, "S");
+        assert_eq!(item.rank, 4);
+        assert_eq!(item.stars, 12_500);
+        assert_eq!(item.category, "writing");
+        assert_eq!(item.market, "agentic");
+        assert!(item.installable);
     }
 
     #[test]

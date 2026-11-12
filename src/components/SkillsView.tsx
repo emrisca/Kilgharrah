@@ -6,6 +6,13 @@ import { Markdown } from "./Markdown";
 import { Sheet } from "./Sheet";
 
 type Scope = "all" | "store" | "hermes" | "market";
+type MarketSort = "popular" | "rank" | "stars" | "downloads";
+
+const MARKET_NAMES: Record<string, string> = {
+  clawhub: "ClawHub",
+  agentic: "AgenticSkills",
+  both: "ClawHub and AgenticSkills"
+};
 
 const MARKET_CATEGORIES: { id: string; label: string }[] = [
   { id: "all", label: "All" },
@@ -36,6 +43,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   const [category, setCategory] = useState("all");
   const [market, setMarket] = useState<CatalogItem[]>([]);
   const [marketCategory, setMarketCategory] = useState("all");
+  const [marketSort, setMarketSort] = useState<MarketSort>("popular");
   const [marketLoading, setMarketLoading] = useState(true);
   const [nonce, setNonce] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
@@ -153,6 +161,35 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   const marketLabel =
     MARKET_CATEGORIES.find((entry) => entry.id === marketCategory)?.label ?? marketCategory;
 
+  const sortedMarket = useMemo(() => {
+    const maxDownloads = Math.max(1, ...market.map((item) => item.downloads));
+    const maxStars = Math.max(1, ...market.map((item) => item.stars));
+    const maxRank = Math.max(1, ...market.map((item) => item.rank));
+    // A blended shelf: downloads from ClawHub, stars from the source repository,
+    // and the editorial position from agenticskills.io, each scaled to its pool.
+    const score = (item: CatalogItem) => {
+      const downloads = item.downloads / maxDownloads;
+      const stars = item.stars / maxStars;
+      const rank = item.rank > 0 ? 1 - (item.rank - 1) / maxRank : 0;
+      return downloads * 0.55 + stars * 0.3 + rank * 0.15;
+    };
+    const rows = [...visibleMarket];
+    rows.sort((a, b) => {
+      switch (marketSort) {
+        case "rank":
+          if ((a.rank === 0) !== (b.rank === 0)) return a.rank === 0 ? 1 : -1;
+          return a.rank - b.rank || b.downloads - a.downloads;
+        case "stars":
+          return b.stars - a.stars || b.downloads - a.downloads;
+        case "downloads":
+          return b.downloads - a.downloads || b.stars - a.stars;
+        default:
+          return score(b) - score(a);
+      }
+    });
+    return rows;
+  }, [visibleMarket, market, marketSort]);
+
   const toggle = async (skill: Skill) => {
     try {
       onState(await api.setSkillEnabled(skill.category, skill.slug, !skill.enabled));
@@ -164,7 +201,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   const install = async (item: CatalogItem, target?: string) => {
     setBusy(item.id);
     try {
-      const next = await api.installMarket(item.slug, item.owner, target ?? null);
+      const next = await api.installMarket(item.slug, item.owner, target ?? null, item.market);
       onState(next);
       setSelectedItem(null);
       notify(`${item.name} installed and enabled`);
@@ -195,7 +232,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
         selected.source === "hermes" ? "Hermes" : "local"
       }`
     : selectedItem
-      ? `ClawHub · ${selectedItem.kind}`
+      ? `Marketplace · ${selectedItem.kind}`
       : "";
   const title = selected?.name ?? selectedItem?.name ?? "";
 
@@ -209,7 +246,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
             ref={searchRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search the store, Hermes and the ClawHub registry"
+            placeholder="Search the store, Hermes and the marketplace"
             spellCheck={false}
             aria-label="Search skills"
           />
@@ -247,7 +284,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
               {value === "all"
                 ? "All"
                 : value === "market"
-                  ? "ClawHub"
+                  ? "Marketplace"
                   : value === "store"
                     ? "Store"
                     : "Hermes"}
@@ -268,7 +305,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
               marketInflight.current.delete(query.trim());
               setNonce((value) => value + 1);
             }}
-            title="Refresh ClawHub"
+            title="Refresh the marketplace"
           >
             {Icon.Refresh}
           </button>
@@ -281,7 +318,7 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
           <p>
             {query
               ? `No installed skill matches "${query.trim()}".`
-              : "Create one, or install from the ClawHub shelf below."}
+              : "Create one, or install from the marketplace below."}
           </p>
           <button className="primary" onClick={() => setCompose(true)}>
             {Icon.Plus} New skill
@@ -353,18 +390,18 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
       {showMarket && (
         <section className="group">
           <header className="group-head">
-            <h2>ClawHub</h2>
+            <h2>Marketplace</h2>
             <p>
               {query.trim()
                 ? `Skills and plugins matching "${query.trim()}"`
                 : marketCategory === "all"
-                  ? "Most downloaded skills, ready to install"
+                  ? "ClawHub downloads and AgenticSkills rankings in one shelf"
                   : `Top skills filed under ${marketLabel}`}
             </p>
             <span className="count">{visibleMarket.length}</span>
           </header>
 
-          <div className="chips-row" role="tablist" aria-label="ClawHub category">
+          <div className="chips-row" role="tablist" aria-label="Marketplace category">
             {MARKET_CATEGORIES.filter(
               (entry) => entry.id === "all" || (marketCounts[entry.id] ?? 0) > 0
             ).map((entry) => (
@@ -382,12 +419,24 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                 </span>
               </button>
             ))}
+            <span className="spacer" />
+            <select
+              className="pill select"
+              value={marketSort}
+              onChange={(event) => setMarketSort(event.target.value as MarketSort)}
+              aria-label="Sort the marketplace"
+            >
+              <option value="popular">Popular</option>
+              <option value="rank">Ranking</option>
+              <option value="stars">Stars</option>
+              <option value="downloads">Downloads</option>
+            </select>
           </div>
 
           {marketLoading && market.length === 0 ? (
-            <div className="grid">
-              {[0, 1, 2, 3, 4, 5].map((index) => (
-                <div className="skel skel-card" key={index} />
+            <div className="market-grid">
+              {[0, 1, 2, 3, 4, 5, 6, 7].map((index) => (
+                <div className="skel skel-mcard" key={index} />
               ))}
             </div>
           ) : visibleMarket.length === 0 ? (
@@ -396,15 +445,16 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
               <p>
                 {market.length === 0
                   ? "Try a different word, or search by a skill name."
-                  : "Pick another category, or search ClawHub by name."}
+                  : "Pick another category, or search the marketplace by name."}
               </p>
             </div>
           ) : (
-            <div className="grid">
-              {visibleMarket.map((item) => (
+            <div className="market-grid">
+              {sortedMarket.map((item, index) => (
                 <article
-                  className="card market"
+                  className="mcard"
                   key={item.id}
+                  style={{ animationDelay: `${Math.min(index, 12) * 16}ms` }}
                   onClick={() => setSelectedItem(item)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -415,12 +465,18 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                   role="button"
                   tabIndex={0}
                 >
-                  <div className="card-top">
-                    <span className="eyebrow">
-                      ClawHub ·{" "}
-                      {MARKET_CATEGORIES.find((entry) => entry.id === item.category)?.label ??
-                        item.kind}
-                    </span>
+                  <div className="mcard-top">
+                    {item.rank > 0 && (
+                      <span className="mcard-rank" title="AgenticSkills position">
+                        #{item.rank}
+                      </span>
+                    )}
+                    <h3>{item.name}</h3>
+                    {item.grade && (
+                      <span className="grade" data-grade={item.grade} title="AgenticSkills grade">
+                        {item.grade}
+                      </span>
+                    )}
                     <button
                       className="icon-btn small"
                       onClick={(event) => {
@@ -442,15 +498,28 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
                       )}
                     </button>
                   </div>
-                  <h3>{item.name}</h3>
                   <p>{item.summary || "No summary provided."}</p>
-                  <div className="card-foot">
-                    <span className="chip">{item.owner}</span>
-                    {item.version && <span className="chip ghost">v{item.version}</span>}
+                  <div className="mcard-foot">
+                    <span className="mcard-owner" title={item.owner}>
+                      {item.owner}
+                    </span>
                     <span className="spacer" />
+                    {item.stars > 0 && (
+                      <span className="stat" title={`${item.stars.toLocaleString()} stars on the source repository`}>
+                        {Icon.Star}
+                        {formatCount(item.stars)}
+                      </span>
+                    )}
+                    {item.downloads > 0 && (
+                      <span className="stat" title={`${item.downloads.toLocaleString()} ClawHub downloads`}>
+                        {Icon.Download}
+                        {formatCount(item.downloads)}
+                      </span>
+                    )}
                     {item.installable && installedSlugs.has(item.slug) && (
                       <span className="chip accent">Installed</span>
                     )}
+                    {!item.installable && <span className="chip">Plugin</span>}
                   </div>
                 </article>
               ))}
@@ -800,7 +869,7 @@ function MarketDetail({
     }
     setPreviewing(true);
     api
-      .previewMarket(item.slug, item.owner)
+      .previewMarket(item.slug, item.owner, item.market)
       .then((text) => {
         if (alive) setPreview(text);
       })
@@ -821,8 +890,14 @@ function MarketDetail({
 
       <div className="facts">
         <Fact label="Owner" value={item.owner} />
+        <Fact label="Source" value={MARKET_NAMES[item.market] ?? item.market} />
         <Fact label="Version" value={item.version || "unversioned"} />
-        <Fact label="Downloads" value={item.downloads.toLocaleString()} />
+        <Fact label="Downloads" value={item.downloads ? item.downloads.toLocaleString() : "not listed"} />
+        <Fact label="Stars" value={item.stars ? item.stars.toLocaleString() : "not listed"} />
+        <Fact
+          label="Ranking"
+          value={item.rank ? `#${item.rank}${item.grade ? ` · ${item.grade}-rank` : ""}` : "unranked"}
+        />
         <Fact label="Category" value={label} />
         <Fact label="Kind" value={item.kind === "bundle" ? "bundle plugin" : item.kind} />
         <Fact label="Installable" value={item.installable ? "as a skill" : "as a package"} />
@@ -1027,6 +1102,16 @@ function Fact({
       </span>
     </div>
   );
+}
+
+function formatCount(value: number) {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  }
+  return value.toLocaleString();
 }
 
 function formatBytes(bytes: number) {

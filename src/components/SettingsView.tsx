@@ -3,20 +3,40 @@ import { api } from "../api";
 import type { AppState } from "../types";
 import { Icon } from "./Icons";
 
+import type { Palette } from "../App";
+
 type Theme = "dark" | "light";
 type Panel = "general" | "credits";
 
 const VERSION = "0.1.0";
 
+const PALETTES: { id: Palette; name: string; note: string }[] = [
+  { id: "aurora", name: "Aurora", note: "Green" },
+  { id: "ember", name: "Ember", note: "Amber" },
+  { id: "tide", name: "Tide", note: "Blue" },
+  { id: "orchid", name: "Orchid", note: "Violet" },
+  { id: "rose", name: "Rose", note: "Pink" }
+];
+
 type Props = {
   state: AppState;
   theme: Theme;
   onTheme: (theme: Theme) => void;
+  palette: Palette;
+  onPalette: (palette: Palette) => void;
   notify: (message: string) => void;
   onError: (message: string) => void;
 };
 
-export function SettingsView({ state, theme, onTheme, notify, onError }: Props) {
+export function SettingsView({
+  state,
+  theme,
+  onTheme,
+  palette,
+  onPalette,
+  notify,
+  onError
+}: Props) {
   const [panel, setPanel] = useState<Panel>("general");
 
   const open = (url: string) => api.openUrl(url).catch((reason) => onError(String(reason)));
@@ -62,6 +82,26 @@ export function SettingsView({ state, theme, onTheme, notify, onError }: Props) 
               <button data-active={theme === "light"} onClick={() => onTheme("light")}>
                 Light
               </button>
+            </div>
+            <div className="palette-head">
+              <span className="sheet-label">Colour</span>
+              <span className="sheet-note">The accent and the surfaces shift together.</span>
+            </div>
+            <div className="palette-row" role="group" aria-label="Colour palette">
+              {PALETTES.map((entry) => (
+                <button
+                  key={entry.id}
+                  className="palette"
+                  data-active={palette === entry.id}
+                  data-palette-swatch={entry.id}
+                  onClick={() => onPalette(entry.id)}
+                  aria-pressed={palette === entry.id}
+                >
+                  <span className="palette-swatch" aria-hidden="true" />
+                  <span className="palette-name">{entry.name}</span>
+                  <span className="palette-note">{entry.note}</span>
+                </button>
+              ))}
             </div>
           </section>
 
@@ -113,11 +153,23 @@ export function SettingsView({ state, theme, onTheme, notify, onError }: Props) 
         <>
           <section className="panel">
             <div className="panel-head">
-              <h3>ClawHub</h3>
+              <h3>Marketplace sources</h3>
               <p>
-                The public registry Kilgharrah searches for skills and plugin packages. Skill
-                listings, versions and files come from the ClawHub API.
+                Kilgharrah reads ClawHub for published skills and plugin packages, and
+                agenticskills.io for its curated, ranked directory. A skill that ships in both
+                shows once.
               </p>
+            </div>
+            <div className="credit">
+              <span className="credit-mark">AS</span>
+              <div className="credit-main">
+                <strong>AgenticSkills</strong>
+                <span className="sheet-note">agenticskills.io · ranked directory</span>
+              </div>
+              <span className="spacer" />
+              <button className="ghost-btn" onClick={() => open("https://agenticskills.io/skills")}>
+                {Icon.External} Open
+              </button>
             </div>
             <div className="credit">
               <span className="credit-mark">CH</span>
@@ -139,7 +191,10 @@ export function SettingsView({ state, theme, onTheme, notify, onError }: Props) 
           <section className="panel">
             <div className="panel-head">
               <h3>Built with</h3>
-              <p>Kilgharrah is a small local app. It sends nothing anywhere except ClawHub requests.</p>
+              <p>
+                Kilgharrah is a small local app. It sends nothing anywhere except marketplace
+                requests.
+              </p>
             </div>
             <div className="credit">
               <span className="credit-mark">FF</span>

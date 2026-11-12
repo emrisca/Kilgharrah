@@ -119,5 +119,16 @@ export const Icon = {
       <path d="M8 2.4v7.2M5.2 6.8 8 9.6l2.8-2.8" />
       <path d="M3 11.2v1.2c0 .6.4 1 1 1h8c.6 0 1-.4 1-1v-1.2" />
     </svg>
+  ),
+  Star: (
+    <svg {...base} width={11} height={11} viewBox="0 0 16 16">
+      <path d="m8 2.3 1.7 3.4 3.8.6-2.8 2.6.7 3.8L8 10.9l-3.4 1.8.7-3.8-2.8-2.6 3.8-.6L8 2.3Z" />
+    </svg>
+  ),
+  Download: (
+    <svg {...base} width={11} height={11} viewBox="0 0 16 16">
+      <path d="M8 2.4v7.4M5.3 7.2 8 9.9l2.7-2.7" />
+      <path d="M3 12.6h10" />
+    </svg>
   )
 };
