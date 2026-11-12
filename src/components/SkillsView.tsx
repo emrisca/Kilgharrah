@@ -43,6 +43,8 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
   const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null);
   const [compose, setCompose] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const marketCache = useRef(new Map<string, CatalogItem[]>());
+  const marketInflight = useRef(new Map<string, Promise<CatalogItem[]>>());
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -62,18 +64,42 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
     if (scope === "store" || scope === "hermes") return;
     const trimmed = query.trim();
     if (trimmed.length === 1) return;
+    const cached = marketCache.current.get(trimmed);
+    if (cached) {
+      setMarket(cached);
+      setMarketLoading(false);
+      return;
+    }
     let alive = true;
+    setMarketLoading(true);
     const timer = setTimeout(
-      async () => {
-        setMarketLoading(true);
-        try {
-          const items = await api.searchMarket(trimmed, trimmed ? 60 : 200);
-          if (alive) setMarket(items);
-        } catch (reason) {
-          onError(String(reason));
-        } finally {
-          if (alive) setMarketLoading(false);
+      () => {
+        let request = marketInflight.current.get(trimmed);
+        if (!request) {
+          const started = api.searchMarket(trimmed, trimmed ? 60 : 200).then((items) => {
+            marketCache.current.set(trimmed, items);
+            return items;
+          });
+          marketInflight.current.set(trimmed, started);
+          started
+            .finally(() => {
+              if (marketInflight.current.get(trimmed) === started) {
+                marketInflight.current.delete(trimmed);
+              }
+            })
+            .catch(() => {});
+          request = started;
         }
+        request
+          .then((items) => {
+            if (alive) setMarket(items);
+          })
+          .catch((reason) => {
+            if (alive) onError(String(reason));
+          })
+          .finally(() => {
+            if (alive) setMarketLoading(false);
+          });
       },
       trimmed ? 320 : 0
     );
@@ -237,7 +263,11 @@ export function SkillsView({ state, onState, notify, onError }: Props) {
         {showMarket && (
           <button
             className="ghost-btn"
-            onClick={() => setNonce((value) => value + 1)}
+            onClick={() => {
+              marketCache.current.delete(query.trim());
+              marketInflight.current.delete(query.trim());
+              setNonce((value) => value + 1);
+            }}
             title="Refresh ClawHub"
           >
             {Icon.Refresh}

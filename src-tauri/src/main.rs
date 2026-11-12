@@ -974,44 +974,26 @@ fn search_market(query: String, limit: Option<u32>) -> Result<Vec<CatalogItem>, 
 
 fn skill_pool(limit: usize) -> Result<Vec<CatalogItem>, String> {
     let mut items: Vec<CatalogItem> = Vec::new();
-    // ClawHub serves the same page for cursor, offset and page parameters, so
-    // every loop stops when a page adds nothing. Two sorts widen the pool.
+    // ClawHub caps a page near 200 rows and repeats the same rows for any
+    // cursor, so one request already holds the pool. Extra sorts only matter
+    // when that first page came back thin.
     for sort in ["downloads", "newest", "trending"] {
-        let mut cursor: Option<String> = None;
-        let mut pages = 0;
-        while items.len() < limit && pages < 2 {
-            pages += 1;
-            let page = (limit - items.len()).min(100);
-            let mut url = format!("{BASE}/api/v1/skills?sort={sort}&limit={page}");
-            if let Some(token) = &cursor {
-                url.push_str(&format!("&cursor={}", encode(token)));
-            }
-            let value = get_json(&url)?;
-            let rows = value
-                .get("items")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let mut added = 0;
-            for row in &rows {
-                if let Some(item) = skill_item(row) {
-                    if !items.iter().any(|existing| existing.id == item.id) {
-                        items.push(item);
-                        added += 1;
-                    }
+        if items.len() >= limit.min(100) {
+            break;
+        }
+        let url = format!("{BASE}/api/v1/skills?sort={sort}&limit={}", limit.min(200));
+        let value = get_json(&url)?;
+        let rows = value
+            .get("items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for row in &rows {
+            if let Some(item) = skill_item(row) {
+                if !items.iter().any(|existing| existing.id == item.id) {
+                    items.push(item);
                 }
             }
-            let next = value
-                .get("nextCursor")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            if added == 0 || next.is_none() || next == cursor {
-                break;
-            }
-            cursor = next;
-        }
-        if items.len() >= limit {
-            break;
         }
     }
     items.truncate(limit);
