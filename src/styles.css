@@ -415,6 +415,7 @@ button:disabled {
 }
 
 .icon-btn {
+  position: relative;
   display: grid;
   place-items: center;
   width: 26px;
@@ -435,6 +436,22 @@ button:disabled {
   width: 22px;
   height: 22px;
   border-radius: 6px;
+}
+
+/* The glyph stays small, but the click target reaches 32px. Scoped to the
+   sheet close and the search clear so the copy and install buttons keep
+   their tight spacing inside cards. */
+.sheet-head .icon-btn::after,
+.searchbar .icon-btn.small::after {
+  content: "";
+  position: absolute;
+  /* 4px past the padding box plus the 1px border gives 32px total. */
+  inset: -4px;
+  border-radius: inherit;
+}
+
+.searchbar .icon-btn.small::after {
+  inset: -6px;
 }
 
 /* ------------------------------------------------------------- page */

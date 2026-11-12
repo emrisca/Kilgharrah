@@ -82,40 +82,50 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
     }
     let alive = true;
     setMarketLoading(true);
-    const timer = setTimeout(
-      () => {
-        let request = marketInflight.current.get(trimmed);
-        if (!request) {
-          const started = api.searchMarket(trimmed, trimmed ? 60 : 200).then((items) => {
-            marketCache.current.set(trimmed, items);
-            return items;
-          });
-          marketInflight.current.set(trimmed, started);
-          started
-            .finally(() => {
-              if (marketInflight.current.get(trimmed) === started) {
-                marketInflight.current.delete(trimmed);
-              }
-            })
-            .catch(() => {});
-          request = started;
-        }
-        request
-          .then((items) => {
-            if (alive) setMarket(items);
-          })
-          .catch((reason) => {
-            if (alive) onError(String(reason));
-          })
+    const start = () => {
+      let request = marketInflight.current.get(trimmed);
+      if (!request) {
+        const started = api.searchMarket(trimmed, trimmed ? 60 : 200).then((items) => {
+          marketCache.current.set(trimmed, items);
+          return items;
+        });
+        marketInflight.current.set(trimmed, started);
+        started
           .finally(() => {
-            if (alive) setMarketLoading(false);
-          });
-      },
-      trimmed ? 320 : 0
-    );
+            if (marketInflight.current.get(trimmed) === started) {
+              marketInflight.current.delete(trimmed);
+            }
+          })
+          .catch(() => {});
+        request = started;
+      }
+      request
+        .then((items) => {
+          if (alive) setMarket(items);
+        })
+        .catch((reason) => {
+          if (alive) onError(String(reason));
+        })
+        .finally(() => {
+          if (alive) setMarketLoading(false);
+        });
+    };
+    // Wait out typing, and on first open let the tab paint before the fetch
+    // starts, so the list never waits on the marketplace.
+    let cancel: () => void;
+    if (trimmed) {
+      const timer = window.setTimeout(start, 320);
+      cancel = () => window.clearTimeout(timer);
+    } else if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(start, { timeout: 600 });
+      cancel = () => window.cancelIdleCallback(handle);
+    } else {
+      const timer = window.setTimeout(start, 60);
+      cancel = () => window.clearTimeout(timer);
+    }
     return () => {
       alive = false;
-      clearTimeout(timer);
+      cancel();
     };
   }, [query, scope, nonce]);
 
