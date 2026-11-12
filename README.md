@@ -9,6 +9,9 @@
 A desktop manager for the skills and MCP servers the Freebuff CLI loads. Install from the ClawHub
 registry, keep your own skills in category folders, and flip one off without deleting its files.
 
+The Home section opens first: a serif wordmark, a short description, live counts, and an ASCII
+dragon drawn as line art over a slow rain of glyphs.
+
 ## What it touches
 
 | Path | Role |
@@ -24,7 +27,9 @@ Other. Folders you add by hand are listed too.
 
 ## Run it
 
-Requires Node 20 or newer, Rust, and the Xcode command line tools on macOS.
+Requires Node 20 or newer and a Rust toolchain. macOS also needs the Xcode command
+line tools; Windows needs the MSVC build tools and WebView2, which the Tauri
+prerequisites installer sets up.
 
 ```bash
 cd kilgharrah
@@ -43,6 +48,37 @@ The app has no Swift or native dependencies outside Tauri. The Dock icon comes f
 in-app mark is a copy of that file at `src/assets/mark.png`. The README banner comes from
 `python3 scripts/make-banner.py`, which draws `ascii-art.txt` directly with plain Python, so no
 image library is needed.
+
+## Home
+
+The Home section is the default tab. It renders three layers on top of the base
+theme:
+
+- `src/assets/wyrm.txt` holds the dragon as plain text. It is a line drawing, so
+  it stays sharp at any size and adds no image weight to the bundle. A blurred
+  copy sits behind the sharp one for the glow.
+- Twenty-two seeded columns of glyphs fall behind the copy. The seed keeps the
+  layout stable when a skill is toggled elsewhere in the app.
+- A handful of embers rise past the art, timed on different loops so they do not
+  pulse together.
+
+All of it uses the active palette, including the sixth palette, Merlin (forest
+green and candle gold), which exists for this section. Under
+`prefers-reduced-motion` the rain, embers and glow are removed rather than sped
+up.
+
+## Updates
+
+The app checks the signed updater endpoint on launch and every four hours. A new
+build shows a banner with the version and a download bar, and the restart is one
+click. The endpoint is the latest GitHub release:
+`https://github.com/emrisca/Kilgharrah/releases/latest/download/latest.json`.
+
+Pushing a tag that matches `v*` runs `.github/workflows/release.yml`, which
+builds Apple silicon, Intel Mac and Windows bundles and publishes them with
+`latest.json`. The workflow needs the `TAURI_SIGNING_PRIVATE_KEY` secret. The
+version comes from `tauri.conf.json` and `package.json`, so bump both before
+tagging.
 
 ## Marketplace
 
@@ -65,6 +101,7 @@ instead of guessing one.
   in the sheet first if you disagree.
 - Removing a skill asks once, in place. There is no dialog stack.
 - MCP servers are written under `mcpServers` and keep every other key in `mcp.json`.
+- The Home tab is first. The other tabs keep their state while it is open.
 - Motion uses springs that carry velocity through a reversal, and all of it collapses under
   `prefers-reduced-motion`.
 
@@ -72,8 +109,12 @@ instead of guessing one.
 
 ```
 kilgharrah/
-  src/                   React views, the spring helper and the token sheet
+  src/                   React views, the spring helper, the updater and the token sheet
+  src/components/HomeView.tsx  Home section: rain, wordmark, dragon, embers
+  src/assets/wyrm.txt    The dragon line art, imported as raw text
+  src/updater.ts         Signed update check, download and relaunch
   src-tauri/src/         Rust commands: store, links, mcp.json, ClawHub
+  .github/workflows/     Release build for macOS and Windows
   assets/                App icon source and the README banner, dark and light
   ascii-art.txt          Source art for the README banner
   scripts/ascii_render.py Glyph renderer used by the banner script

@@ -19,6 +19,7 @@
   --danger: #ff7373;
   --sheet-bg: rgba(13, 16, 21, 0.9);
   --shadow: 0 18px 40px -24px rgba(0, 0, 0, 0.9);
+  --serif: "Palatino Linotype", Palatino, "Book Antiqua", "Iowan Old Style", Cochin, Georgia, serif;
 }
 
 [data-theme="light"] {
@@ -175,6 +176,43 @@
   --accent-line: rgba(191, 63, 104, 0.3);
   --accent-ink: #ffffff;
   --sheet-bg: rgba(255, 255, 255, 0.93);
+}
+
+/* Merlin: forest green rooms lit by candle gold. */
+[data-palette="merlin"][data-theme="dark"] {
+  --bg: #070a08;
+  --bg-soft: #0a0f0c;
+  --surface: #0f1511;
+  --card: #131a15;
+  --card-2: #0c120e;
+  --border: rgba(216, 196, 138, 0.09);
+  --border-strong: rgba(216, 196, 138, 0.2);
+  --text: #f1eee2;
+  --text-dim: #a9a48f;
+  --text-faint: #8c8874;
+  --accent: #d8b45e;
+  --accent-soft: rgba(216, 180, 94, 0.14);
+  --accent-line: rgba(216, 180, 94, 0.36);
+  --accent-ink: #1a1405;
+  --sheet-bg: rgba(15, 21, 17, 0.9);
+}
+
+[data-palette="merlin"][data-theme="light"] {
+  --bg: #f6f2e7;
+  --bg-soft: #ece6d6;
+  --surface: #fffdf6;
+  --card: #fffdf6;
+  --card-2: #f8f3e6;
+  --border: rgba(64, 52, 24, 0.16);
+  --border-strong: rgba(64, 52, 24, 0.26);
+  --text: #1b1811;
+  --text-dim: #5e5747;
+  --text-faint: #6f6957;
+  --accent: #8a6a1f;
+  --accent-soft: rgba(138, 106, 31, 0.1);
+  --accent-line: rgba(138, 106, 31, 0.32);
+  --accent-ink: #ffffff;
+  --sheet-bg: rgba(255, 253, 246, 0.94);
 }
 
 * {
@@ -2071,5 +2109,279 @@ select.pill {
 
 [data-palette-swatch="rose"] .palette-swatch {
   background: linear-gradient(135deg, #ff9fb6, #bf3f68);
+}
+
+[data-palette-swatch="merlin"] .palette-swatch {
+  background: linear-gradient(135deg, #ecd08a, #1f3b2a);
+}
+
+/* Home */
+.home {
+  position: relative;
+  isolation: isolate;
+  min-height: calc(100vh - 128px);
+  overflow: hidden;
+}
+
+.home-rain {
+  position: absolute;
+  inset: 0 0 0 34%;
+  overflow: hidden;
+  pointer-events: none;
+  mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 84%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 84%, transparent);
+}
+
+.rain-col {
+  position: absolute;
+  top: 0;
+  color: var(--accent);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  line-height: 1.15;
+  white-space: pre;
+  animation-name: rain-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes rain-fall {
+  from {
+    transform: translateY(-32vh);
+  }
+  to {
+    transform: translateY(106vh);
+  }
+}
+
+.home-hero {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  min-height: calc(100vh - 128px);
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(26px, 5vh, 60px) clamp(16px, 4vw, 44px);
+  align-items: center;
+  gap: clamp(20px, 4vw, 54px);
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+}
+
+.home-copy {
+  display: flex;
+  max-width: 46ch;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.home-eyebrow {
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+}
+
+.home-word {
+  margin: 12px 0 0;
+  font-family: var(--serif);
+  font-size: clamp(40px, 5.4vw, 64px);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.home-rule {
+  display: flex;
+  width: 216px;
+  margin: 18px 0 20px;
+  align-items: center;
+  gap: 9px;
+}
+
+.home-rule span {
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(to right, transparent, var(--accent-line));
+}
+
+.home-rule span:last-child {
+  background: linear-gradient(to left, transparent, var(--accent-line));
+}
+
+.home-rule i {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  background: var(--accent);
+  transform: rotate(45deg);
+}
+
+.home-lead {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13.5px;
+  line-height: 1.68;
+}
+
+.home-actions {
+  display: flex;
+  margin-top: 24px;
+  gap: 8px;
+}
+
+.home-stats {
+  display: flex;
+  width: 100%;
+  margin: 30px 0 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  gap: 30px;
+}
+
+.home-stats div {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 3px;
+}
+
+.home-stats dt {
+  color: var(--text-faint);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.home-stats dd {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.home-foot {
+  margin: 20px 0 0;
+  color: var(--text-faint);
+  font-family: var(--serif);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.home-art {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  justify-self: center;
+  /* The art carries a wide band of dots behind the head. Fade that band so
+     the head and neck read as a drawing instead of a hill. */
+  mask-image: linear-gradient(to right, transparent, #000 5%, #000 98%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 5%, #000 98%, transparent);
+}
+
+.home-art::before {
+  position: absolute;
+  z-index: 0;
+  inset: -6%;
+  background: radial-gradient(closest-side, var(--bg) 34%, transparent 80%);
+  content: "";
+  pointer-events: none;
+}
+
+.home-glow {
+  position: absolute;
+  z-index: 0;
+  inset: 8% 0 22% 46%;
+  background: radial-gradient(closest-side, var(--accent-soft), transparent 70%);
+  filter: blur(12px);
+  animation: home-glow 8s ease-in-out infinite alternate;
+}
+
+@keyframes home-glow {
+  from {
+    opacity: 0.4;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 0.85;
+    transform: scale(1.03);
+  }
+}
+
+.home-art-layer {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: clamp(5.6px, 1.2vw, 14.4px);
+  line-height: 1.04;
+  letter-spacing: 0;
+  white-space: pre;
+}
+
+.home-art-ink {
+  position: relative;
+  z-index: 1;
+  color: var(--text);
+  opacity: 0.88;
+}
+
+.home-art-ghost {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  color: var(--accent);
+  opacity: 0.22;
+  filter: blur(7px);
+}
+
+.home-embers {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+}
+
+.home-embers span {
+  position: absolute;
+  bottom: 14%;
+  color: var(--accent);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  opacity: 0;
+  animation-name: ember-rise;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes ember-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+  18% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-170px);
+  }
+}
+
+@media (max-width: 920px) {
+  .home-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .home-art {
+    max-width: 520px;
+    opacity: 0.7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-rain,
+  .home-embers,
+  .home-glow {
+    display: none;
+  }
 }
 

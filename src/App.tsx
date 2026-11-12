@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import type { AppState, CatalogItem, InstallJob } from "./types";
+import { HomeView } from "./components/HomeView";
 import { SkillsView } from "./components/SkillsView";
 import { McpView } from "./components/McpView";
 import { SettingsView } from "./components/SettingsView";
@@ -10,14 +11,15 @@ import { Icon } from "./components/Icons";
 import { useUpdater } from "./updater";
 
 type Theme = "dark" | "light";
-export type Palette = "aurora" | "ember" | "tide" | "orchid" | "rose";
+export type Palette = "aurora" | "ember" | "tide" | "orchid" | "rose" | "merlin";
+export type Tab = "home" | "skills" | "mcp" | "settings";
 const THEME_KEY = "kilgharrah.theme";
 const PALETTE_KEY = "kilgharrah.palette";
-const PALETTES: Palette[] = ["aurora", "ember", "tide", "orchid", "rose"];
+const PALETTES: Palette[] = ["aurora", "ember", "tide", "orchid", "rose", "merlin"];
 
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
-  const [tab, setTab] = useState<"skills" | "mcp" | "settings">("skills");
+  const [tab, setTab] = useState<Tab>("home");
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [installs, setInstalls] = useState<InstallJob[]>([]);
@@ -134,6 +136,9 @@ export default function App() {
         </div>
 
         <nav className="tabs" aria-label="Sections">
+          <button className="tab" data-active={tab === "home"} onClick={() => setTab("home")}>
+            Home
+          </button>
           <button className="tab" data-active={tab === "skills"} onClick={() => setTab("skills")}>
             Skills <span className="tab-count">{enabled}</span>
           </button>
@@ -204,6 +209,8 @@ export default function App() {
       <main className="page">
         {state === null ? (
           <Loading />
+        ) : tab === "home" ? (
+          <HomeView state={state} onOpen={setTab} />
         ) : tab === "skills" ? (
           <SkillsView
             state={state}

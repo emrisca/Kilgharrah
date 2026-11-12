@@ -16,7 +16,8 @@ const PALETTES: { id: Palette; name: string; note: string }[] = [
   { id: "ember", name: "Ember", note: "Amber" },
   { id: "tide", name: "Tide", note: "Blue" },
   { id: "orchid", name: "Orchid", note: "Violet" },
-  { id: "rose", name: "Rose", note: "Pink" }
+  { id: "rose", name: "Rose", note: "Pink" },
+  { id: "merlin", name: "Merlin", note: "Gold" }
 ];
 
 type Props = {
