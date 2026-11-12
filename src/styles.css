@@ -1505,6 +1505,43 @@ select.pill {
   font-size: 11px;
 }
 
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.path-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.path-row .ghost-btn {
+  height: 32px;
+  white-space: nowrap;
+}
+
+.sheet[data-wide="true"] {
+  width: min(560px, calc(100vw - 24px));
+}
+
+.dragon-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dragon-editor {
+  height: 330px;
+  padding: 8px;
+  font-size: 10px;
+  line-height: 1.15;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+}
+
 .mono {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }

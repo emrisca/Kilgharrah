@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { api } from "../api";
 import type { AppState } from "../types";
 import type { Tab } from "../App";
 import { Icon } from "./Icons";
-import dragon from "../assets/dragon.txt?raw";
+import { BUNDLED_FRAMES, splitFrames } from "../dragon";
 
 type Props = {
   state: AppState;
@@ -11,8 +12,7 @@ type Props = {
 
 /// The banner art is one flying dragon frame per block of text, cut from the
 /// GIF and kept as plain text so it stays sharp at any size and adds no image
-/// weight to the bundle.
-const FRAMES = dragon.trim().split(/\n~{8}\n/);
+/// weight to the bundle. A saved copy in the library wins over the bundle.
 const FRAME_MS = 60;
 
 function prefersCalm() {
@@ -20,17 +20,39 @@ function prefersCalm() {
 }
 
 export function HomeView({ state, onOpen }: Props) {
+  const [frames, setFrames] = useState(BUNDLED_FRAMES);
   const [frame, setFrame] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const saved = await api.readDragon();
+        if (!alive) return;
+        setFrames(saved ? splitFrames(saved) : BUNDLED_FRAMES);
+        setFrame(0);
+      } catch {
+        // Keep the bundled art when the saved copy cannot be read.
+      }
+    };
+    void load();
+    const onSaved = () => void load();
+    window.addEventListener("kilgharrah:dragon", onSaved);
+    return () => {
+      alive = false;
+      window.removeEventListener("kilgharrah:dragon", onSaved);
+    };
+  }, []);
 
   useEffect(() => {
     if (prefersCalm()) return;
     const timer = window.setInterval(() => {
-      setFrame((current) => (current + 1) % FRAMES.length);
+      setFrame((current) => (current + 1) % frames.length);
     }, FRAME_MS);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [frames.length]);
 
-  const art = FRAMES[frame];
+  const art = frames[frame] ?? frames[0];
   const enabled = state.skills.filter((skill) => skill.enabled).length;
   const installed = state.skills.length;
 

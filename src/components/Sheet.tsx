@@ -7,6 +7,7 @@ type Props = {
   onClose: () => void;
   eyebrow: string;
   title: string;
+  wide?: boolean;
   children: ReactNode;
 };
 
@@ -14,7 +15,7 @@ type Props = {
  * Right-side inspector. It stays mounted through the exit spring so closing
  * can be grabbed and reversed, and the scrim is the only part that fades.
  */
-export function Sheet({ open, onClose, eyebrow, title, children }: Props) {
+export function Sheet({ open, onClose, eyebrow, title, wide, children }: Props) {
   const [mounted, setMounted] = useState(open);
   const panel = useRef<HTMLDivElement>(null);
   const last = useRef({ eyebrow, title, children });
@@ -54,7 +55,14 @@ export function Sheet({ open, onClose, eyebrow, title, children }: Props) {
   return (
     <>
       <div className="scrim" data-open={open} onClick={onClose} />
-      <aside ref={panel} className="sheet" data-open={open} aria-label={view.title} role="dialog">
+      <aside
+        ref={panel}
+        className="sheet"
+        data-open={open}
+        data-wide={wide || undefined}
+        aria-label={view.title}
+        role="dialog"
+      >
         <header className="sheet-head">
           <div className="sheet-heading">
             <span className="eyebrow">{view.eyebrow}</span>

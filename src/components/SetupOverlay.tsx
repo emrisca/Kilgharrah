@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import type { AppState } from "../types";
 import { Icon } from "./Icons";
@@ -20,22 +21,33 @@ type Props = {
 export function SetupOverlay({ state, onState, onClose, onError }: Props) {
   const setup = state.setup;
   const [step, setStep] = useState(0);
-  const [project, setProject] = useState(Boolean(setup.projectRoot));
   const [root, setRoot] = useState(setup.projectRoot ?? "");
   const [agent, setAgent] = useState(setup.agent || "freebuff");
   const [profile, setProfile] = useState(setup.profile ?? "none");
   const [saving, setSaving] = useState(false);
 
   const chosen = AGENTS.find((entry) => entry.id === agent) ?? AGENTS[0];
-  const target = project
-    ? `${root.trim().replace(/\/$/, "")}/${chosen.folder}`
-    : `~/${chosen.folder}`;
+  const projectPath = root.trim().replace(/\/$/, "");
+  const target = projectPath ? `${projectPath}/${chosen.folder}` : `~/${chosen.folder}`;
+
+  const browse = async () => {
+    try {
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose a project folder"
+      });
+      if (typeof picked === "string") setRoot(picked);
+    } catch (reason) {
+      onError(String(reason));
+    }
+  };
 
   const finish = async () => {
     setSaving(true);
     try {
       const next = await api.completeSetup({
-        projectRoot: project ? root.trim() : null,
+        projectRoot: projectPath || null,
         agent,
         profile: profile === "none" ? null : profile
       });
@@ -47,8 +59,6 @@ export function SetupOverlay({ state, onState, onClose, onError }: Props) {
       setSaving(false);
     }
   };
-
-  const canContinue = step !== 0 || !project || root.trim().length > 0;
 
   return (
     <div className="setup" role="dialog" aria-label="Set up Kilgharrah">
@@ -74,31 +84,29 @@ export function SetupOverlay({ state, onState, onClose, onError }: Props) {
             <>
               <h2>Where do you work?</h2>
               <p className="sheet-note">
-                Home keeps one library for every project. A project folder keeps its own skills and
-                MCP config inside that folder.
+                Leave the field empty to keep one library in your home folder. Pick a project folder
+                to keep its own skills and MCP config inside that folder.
               </p>
-              <div className="segmented" role="group" aria-label="Scope">
-                <button data-active={!project} onClick={() => setProject(false)}>
-                  Home
-                </button>
-                <button data-active={project} onClick={() => setProject(true)}>
-                  Project folder
-                </button>
-              </div>
-              {project && (
-                <label className="field">
-                  <span>Project folder</span>
+              <div className="field">
+                <span id="setup-root-label">Project folder</span>
+                <div className="path-row">
                   <input
                     className="input mono"
+                    aria-labelledby="setup-root-label"
                     value={root}
                     onChange={(event) => setRoot(event.target.value)}
-                    placeholder="/Users/you/code/app or ~/code/app"
+                    placeholder="Leave empty for Home, or /Users/you/code/app"
                     spellCheck={false}
                     autoFocus
                   />
-                  <span className="sheet-note">The folder must already exist.</span>
-                </label>
-              )}
+                  <button type="button" className="ghost-btn" onClick={() => void browse()}>
+                    Browse
+                  </button>
+                </div>
+                <span className="sheet-note">
+                  Leave empty to use Home. The folder must already exist.
+                </span>
+              </div>
             </>
           )}
 
@@ -120,7 +128,7 @@ export function SetupOverlay({ state, onState, onClose, onError }: Props) {
                     <span className="target-copy">
                       <strong>{entry.name}</strong>
                       <span className="sheet-note mono">
-                        {project ? `${root.trim().replace(/\/$/, "")}/${entry.folder}` : `~/${entry.folder}`}
+                        {projectPath ? `${projectPath}/${entry.folder}` : `~/${entry.folder}`}
                       </span>
                     </span>
                     {entry.note && <span className="chip">{entry.note}</span>}
@@ -163,6 +171,9 @@ export function SetupOverlay({ state, onState, onClose, onError }: Props) {
                         {entry.skills} skill{entry.skills === 1 ? "" : "s"} and {entry.servers} MCP
                         server{entry.servers === 1 ? "" : "s"}
                       </span>
+                      {entry.serverNames.length > 0 && (
+                        <span className="sheet-note mono">{entry.serverNames.join(", ")}</span>
+                      )}
                     </span>
                     {entry.builtin && <span className="chip">Built in</span>}
                     {profile === entry.name && <span className="chip accent">Selected</span>}
@@ -200,11 +211,7 @@ export function SetupOverlay({ state, onState, onClose, onError }: Props) {
           </button>
           <span className="spacer" />
           {step < 2 ? (
-            <button
-              className="primary"
-              disabled={!canContinue}
-              onClick={() => setStep(step + 1)}
-            >
+            <button className="primary" onClick={() => setStep(step + 1)}>
               Continue {Icon.ChevronRight}
             </button>
           ) : (

@@ -47,6 +47,10 @@ export const api = {
   setSkillSource: (category: string, slug: string, owner: string) =>
     invoke<AppState>("set_skill_source", { category, slug, owner }),
 
+  readDragon: () => invoke<string | null>("read_dragon"),
+
+  saveDragon: (frames: string[]) => invoke<void>("save_dragon", { frames }),
+
   completeSetup: (input: {
     projectRoot: string | null;
     agent: string;

@@ -3,6 +3,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { api } from "../api";
 import type { AppState, Diagnostics, SkillUpdate } from "../types";
 import { Icon } from "./Icons";
+import { DragonEditor } from "./DragonEditor";
+import { BUNDLED_FRAMES, frameFits, splitFrames } from "../dragon";
 
 import type { Palette } from "../App";
 import type { UpdateView } from "../updater";
@@ -61,6 +63,8 @@ export function SettingsView({
   const [updatingSlug, setUpdatingSlug] = useState<string | null>(null);
   const [updatingAll, setUpdatingAll] = useState(false);
   const [profileName, setProfileName] = useState("");
+  const [dragonOpen, setDragonOpen] = useState(false);
+  const [dragon, setDragon] = useState<{ count: number; bad: number } | null>(null);
   const [exporting, setExporting] = useState(false);
   const [applying, setApplying] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -70,6 +74,28 @@ export function SettingsView({
     getVersion()
       .then(setVersion)
       .catch(() => setVersion(""));
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      api
+        .readDragon()
+        .then((saved) => {
+          if (!alive) return;
+          const frames = saved ? splitFrames(saved) : BUNDLED_FRAMES;
+          setDragon({ count: frames.length, bad: frames.findIndex((frame) => !frameFits(frame)) });
+        })
+        .catch(() => {
+          if (alive) setDragon(null);
+        });
+    };
+    load();
+    window.addEventListener("kilgharrah:dragon", load);
+    return () => {
+      alive = false;
+      window.removeEventListener("kilgharrah:dragon", load);
+    };
   }, []);
 
   const runDiagnostics = async () => {
@@ -265,6 +291,28 @@ export function SettingsView({
                   <span className="palette-note">{entry.note}</span>
                 </button>
               ))}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Home animation</h3>
+              <p>Step through the dragon frames and fix stray characters.</p>
+            </div>
+            <div className="filters">
+              <button className="ghost-btn" onClick={() => setDragonOpen(true)}>
+                {Icon.Edit} Edit dragon frames
+              </button>
+              <span className="spacer" />
+              {dragon === null ? (
+                <span className="sheet-note">Reading frames</span>
+              ) : dragon.bad === -1 ? (
+                <span className="chip">
+                  {dragon.count} frames, 23 by 70
+                </span>
+              ) : (
+                <span className="chip accent">Frame {dragon.bad + 1} needs a fix</span>
+              )}
             </div>
           </section>
 
@@ -716,6 +764,13 @@ export function SettingsView({
           </section>
         </>
       )}
+
+      <DragonEditor
+        open={dragonOpen}
+        onClose={() => setDragonOpen(false)}
+        notify={notify}
+        onError={onError}
+      />
     </div>
   );
 }

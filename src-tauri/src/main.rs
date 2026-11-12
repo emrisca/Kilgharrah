@@ -298,6 +298,7 @@ struct ProfileInfo {
     path: Option<String>,
     skills: usize,
     servers: usize,
+    server_names: Vec<String>,
     builtin: bool,
 }
 
@@ -653,6 +654,71 @@ fn write_settings(settings: &Settings) -> Result<(), String> {
     fs::write(&path, format!("{text}\n")).map_err(|e| format!("Could not save the settings: {e}"))
 }
 
+// ---------------------------------------------------------------- dragon
+
+fn dragon_path() -> PathBuf {
+    store_root().join("dragon.txt")
+}
+
+fn build_dragon_text(frames: &[String]) -> Result<String, String> {
+    if frames.is_empty() {
+        return Err("Keep at least one frame.".into());
+    }
+    if frames.len() > 200 {
+        return Err("That is more than 200 frames.".into());
+    }
+    let mut clean = Vec::with_capacity(frames.len());
+    for (index, frame) in frames.iter().enumerate() {
+        let frame = frame.replace("\r\n", "\n").replace('\r', "\n");
+        // Keep blank rows at the end of a frame. Several frames rest the dragon
+        // near the top, so their bottom rows are empty on purpose.
+        let rows: Vec<&str> = frame.split('\n').collect();
+        if rows.len() != 23 {
+            return Err(format!(
+                "Frame {} needs 23 lines, not {}.",
+                index + 1,
+                rows.len()
+            ));
+        }
+        if rows.iter().any(|row| row.chars().count() > 70) {
+            return Err(format!("Frame {} has a line wider than 70 columns.", index + 1));
+        }
+        if rows.iter().any(|row| row.contains('\t')) {
+            return Err(format!("Frame {} contains a tab. Use spaces.", index + 1));
+        }
+        clean.push(rows.join("\n"));
+    }
+    Ok(clean.join("\n~~~~~~~~\n"))
+}
+
+fn read_dragon_at(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("Could not read the dragon frames: {error}")),
+    }
+}
+
+fn save_dragon_at(path: &Path, frames: &[String]) -> Result<(), String> {
+    let text = build_dragon_text(frames)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Could not create the store: {e}"))?;
+    }
+    fs::write(path, format!("{text}\n"))
+        .map_err(|e| format!("Could not save the dragon frames: {e}"))
+}
+
+#[tauri::command]
+fn read_dragon() -> Result<Option<String>, String> {
+    read_dragon_at(&dragon_path())
+}
+
+#[tauri::command]
+fn save_dragon(frames: Vec<String>) -> Result<(), String> {
+    ensure_store()?;
+    save_dragon_at(&dragon_path(), &frames)
+}
+
 // ---------------------------------------------------------------- profiles
 
 fn profiles_dir() -> PathBuf {
@@ -664,6 +730,124 @@ fn hermes_mcp_path() -> PathBuf {
         .parent()
         .map(|parent| parent.join("mcp.json"))
         .unwrap_or_else(|| home_dir().join(".hermes").join("mcp.json"))
+}
+
+fn hermes_config_path() -> PathBuf {
+    hermes_root()
+        .parent()
+        .map(|parent| parent.join("config.yaml"))
+        .unwrap_or_else(|| home_dir().join(".hermes").join("config.yaml"))
+}
+
+fn yaml_text(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(text) => Some(text.clone()),
+        serde_yaml::Value::Number(number) => Some(number.to_string()),
+        serde_yaml::Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+/// Hermes keeps its servers under `mcp_servers` in `config.yaml`. Only enabled
+/// entries with a command can be copied into the Kilgharrah library.
+fn servers_from_hermes_yaml(text: &str) -> Option<Vec<ProfileServer>> {
+    let doc: serde_yaml::Value = serde_yaml::from_str(text).ok()?;
+    let entry = doc
+        .as_mapping()?
+        .get(&serde_yaml::Value::String("mcp_servers".into()))?;
+    let map = entry.as_mapping()?;
+    let mut out = Vec::new();
+    for (name, config) in map {
+        let (Some(name), Some(config)) = (name.as_str(), config.as_mapping()) else {
+            continue;
+        };
+        let field = |key: &str| config.get(&serde_yaml::Value::String(key.into()));
+        if field("enabled").and_then(|value| value.as_bool()) == Some(false) {
+            continue;
+        }
+        let command = field("command").and_then(yaml_text).unwrap_or_default();
+        if command.is_empty() {
+            continue;
+        }
+        let args = field("args")
+            .and_then(|value| value.as_sequence())
+            .map(|items| items.iter().filter_map(yaml_text).collect())
+            .unwrap_or_default();
+        let env = field("env")
+            .and_then(|value| value.as_mapping())
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(key, value)| {
+                        Some((key.as_str()?.to_string(), yaml_text(value)?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(ProfileServer {
+            name: name.to_string(),
+            command,
+            args,
+            env,
+        });
+    }
+    Some(out)
+}
+
+fn servers_from_hermes_json(text: &str) -> Vec<ProfileServer> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let Some(map) = value
+        .get("mcpServers")
+        .or_else(|| value.get("mcp_servers"))
+        .and_then(|entry| entry.as_object())
+    else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter(|(_, entry)| entry.get("enabled").and_then(|value| value.as_bool()) != Some(false))
+        .map(|(name, entry)| ProfileServer {
+            name: name.clone(),
+            command: entry
+                .get("command")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            args: entry
+                .get("args")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|value| value.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            env: entry
+                .get("env")
+                .and_then(|value| value.as_object())
+                .map(|map| {
+                    map.iter()
+                        .filter_map(|(key, value)| {
+                            value.as_str().map(|text| (key.clone(), text.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .filter(|server| !server.command.is_empty())
+        .collect()
+}
+
+fn hermes_servers() -> Vec<ProfileServer> {
+    if let Ok(text) = fs::read_to_string(hermes_config_path()) {
+        if let Some(servers) = servers_from_hermes_yaml(&text) {
+            return servers;
+        }
+    }
+    fs::read_to_string(hermes_mcp_path())
+        .map(|text| servers_from_hermes_json(&text))
+        .unwrap_or_default()
 }
 
 fn walk_profile_files(dir: &Path, base: &Path, depth: usize, out: &mut Vec<ProfileFile>) {
@@ -764,24 +948,16 @@ fn export_profile(name: String) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
-fn hermes_counts() -> (usize, usize) {
+fn list_profiles() -> Vec<ProfileInfo> {
     let mut candidates = Vec::new();
     collect_skills(hermes_root(), "hermes", &mut candidates);
-    let servers = fs::read_to_string(hermes_mcp_path())
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value.get("mcpServers").and_then(|v| v.as_object()).map(|map| map.len()))
-        .unwrap_or(0);
-    (candidates.len(), servers)
-}
-
-fn list_profiles() -> Vec<ProfileInfo> {
-    let (hermes_skills, hermes_servers) = hermes_counts();
+    let servers = hermes_servers();
     let mut out = vec![ProfileInfo {
         name: "Hermes".into(),
         path: None,
-        skills: hermes_skills,
-        servers: hermes_servers,
+        skills: candidates.len(),
+        servers: servers.len(),
+        server_names: servers.iter().map(|server| server.name.clone()).collect(),
         builtin: true,
     }];
     if let Ok(entries) = fs::read_dir(profiles_dir()) {
@@ -801,6 +977,11 @@ fn list_profiles() -> Vec<ProfileInfo> {
                 path: Some(path.display().to_string()),
                 skills: profile.skills.len(),
                 servers: profile.servers.len(),
+                server_names: profile
+                    .servers
+                    .iter()
+                    .map(|server| server.name.clone())
+                    .collect(),
                 builtin: false,
             });
         }
@@ -920,46 +1101,8 @@ fn apply_hermes() -> Result<usize, String> {
         link_skill(slug, &to)?;
         installed += 1;
     }
-    let hermes = fs::read_to_string(hermes_mcp_path())
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .unwrap_or_else(|| json!({ "mcpServers": {} }));
-    if let Some(map) = hermes.get("mcpServers").and_then(|value| value.as_object()) {
-        let servers: Vec<ProfileServer> = map
-            .iter()
-            .map(|(name, entry)| ProfileServer {
-                name: name.clone(),
-                command: entry
-                    .get("command")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                args: entry
-                    .get("args")
-                    .and_then(|value| value.as_array())
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|value| value.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                env: entry
-                    .get("env")
-                    .and_then(|value| value.as_object())
-                    .map(|map| {
-                        map.iter()
-                            .filter_map(|(key, value)| {
-                                value.as_str().map(|text| (key.clone(), text.to_string()))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            })
-            .filter(|server| !server.command.is_empty())
-            .collect();
-        merge_profile_servers(&servers)?;
-    }
+    let servers = hermes_servers();
+    merge_profile_servers(&servers)?;
     let mut settings = read_settings();
     settings.profile = Some("Hermes".into());
     write_settings(&settings)?;
@@ -3478,6 +3621,7 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             add_skill,
@@ -3498,6 +3642,8 @@ fn main() {
             update_all_skills,
             set_skill_source,
             complete_setup,
+            read_dragon,
+            save_dragon,
             export_profile,
             apply_profile,
             delete_profile,
@@ -3535,6 +3681,96 @@ mod tests {
         let (name, description) = parse_frontmatter(text);
         assert_eq!(name.as_deref(), Some("Demo"));
         assert_eq!(description.as_deref(), Some("A small test skill"));
+    }
+
+    #[test]
+    fn dragon_frames_keep_their_grid() {
+        let frame = (0..23)
+            .map(|_| " ".repeat(70))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = build_dragon_text(&[frame.clone(), frame]).expect("valid frames save");
+        assert_eq!(text.matches("\n~~~~~~~~\n").count(), 1);
+        assert!(build_dragon_text(&["one line".into()]).is_err());
+        let wide = (0..23)
+            .map(|_| "x".repeat(71))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(build_dragon_text(&[wide]).is_err());
+    }
+
+    #[test]
+    fn dragon_frames_keep_blank_bottom_rows() {
+        // Several frames rest the dragon near the top, so the last rows are empty.
+        let mut rows = vec![" ".repeat(20); 19];
+        for _ in 0..4 {
+            rows.push(String::new());
+        }
+        let frame = rows.join("\n");
+        let text = build_dragon_text(&[frame]).expect("blank bottom rows save");
+        assert_eq!(text.split('\n').count(), 23);
+    }
+
+    #[test]
+    fn dragon_frames_round_trip_through_a_file() {
+        let dir = std::env::temp_dir().join(format!("kilgharrah-dragon-{}", std::process::id()));
+        let path = dir.join("dragon.txt");
+        let mut resting = vec![" ".repeat(20); 19];
+        for _ in 0..4 {
+            resting.push(String::new());
+        }
+        let frames = vec![(0..23).map(|_| "+".repeat(70)).collect::<Vec<_>>().join("\n"), resting.join("\n")];
+
+        save_dragon_at(&path, &frames).expect("frames save to a file");
+        let saved = read_dragon_at(&path).expect("frames read back").expect("file exists");
+        assert!(saved.ends_with('\n'));
+
+        // Drop only the newline the file ends with, the way the frontend does.
+        // Blank rows at the end of the last frame must survive.
+        let body = saved.strip_suffix('\n').expect("file ends with a newline");
+        let reread: Vec<String> = body
+            .split("\n~~~~~~~~\n")
+            .map(|frame| frame.to_string())
+            .collect();
+        assert_eq!(reread, frames);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hermes_yaml_servers_are_read() {
+        let text = r#"
+onboarding:
+  run: false
+mcp_servers:
+  rea:
+    command: /opt/homebrew/bin/rea.mjs
+    args:
+      - mcp
+    enabled: true
+    env:
+      PATH: /usr/bin:/bin
+  paused:
+    command: npx
+    enabled: false
+"#;
+        let servers = servers_from_hermes_yaml(text).expect("the YAML parses");
+        assert_eq!(servers.len(), 1, "a disabled server is skipped");
+        assert_eq!(servers[0].name, "rea");
+        assert_eq!(servers[0].command, "/opt/homebrew/bin/rea.mjs");
+        assert_eq!(servers[0].args, vec!["mcp".to_string()]);
+        assert_eq!(
+            servers[0].env.get("PATH").map(String::as_str),
+            Some("/usr/bin:/bin")
+        );
+    }
+
+    #[test]
+    fn hermes_json_servers_are_read() {
+        let text = r#"{"mcpServers":{"mine":{"command":"npx","args":["-y","pkg"]}}}"#;
+        let servers = servers_from_hermes_json(text);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "mine");
+        assert_eq!(servers[0].args, vec!["-y".to_string(), "pkg".to_string()]);
     }
 
     #[test]

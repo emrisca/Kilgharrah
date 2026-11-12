@@ -84,6 +84,7 @@ export type ProfileInfo = {
   path: string | null;
   skills: number;
   servers: number;
+  serverNames: string[];
   builtin: boolean;
 };
 
