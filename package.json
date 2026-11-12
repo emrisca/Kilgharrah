@@ -1,7 +1,7 @@
 {
   "name": "kilgharrah",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Skills and MCP manager for the Freebuff CLI",
   "scripts": {

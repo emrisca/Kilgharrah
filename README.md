@@ -80,8 +80,21 @@ click. The endpoint is the latest GitHub release:
 Pushing a tag that matches `v*` runs `.github/workflows/release.yml`, which
 builds Apple silicon, Intel Mac and Windows bundles and publishes them with
 `latest.json`. The workflow needs the `TAURI_SIGNING_PRIVATE_KEY` secret. The
-version comes from `tauri.conf.json` and `package.json`, so bump both before
-tagging.
+version comes from `package.json`, `src-tauri/Cargo.toml` and
+`src-tauri/tauri.conf.json`, so bump all three before tagging.
+
+### First launch on macOS
+
+Releases are signed ad hoc through `bundle.macOS.signingIdentity`, which seals
+the bundle so macOS does not report it as damaged. Without an Apple Developer
+ID the system still does not trust the download on the first launch. Open the
+app once, then go to System Settings, Privacy & Security, and press Open Anyway
+in the Security section. macOS 15 removed the Control-click shortcut, so that
+button is the way through. Later launches and updates are quiet.
+
+A Developer ID certificate plus notarisation is the only way to remove that
+prompt entirely. Set `signingIdentity` to the certificate name and add the
+notarisation secrets to the release workflow.
 
 ## Marketplace
 
