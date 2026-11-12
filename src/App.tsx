@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import type { AppState } from "./types";
 import { SkillsView } from "./components/SkillsView";
@@ -23,6 +24,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(THEME_KEY, theme);
+    getCurrentWindow().setTheme(theme).catch(() => {});
   }, [theme]);
 
   useEffect(() => {
@@ -53,7 +55,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="topbar" data-tauri-drag-region>
+      <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
           <span className="brand-name">Kilgharrah</span>
