@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: kilgharrah/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -42,11 +42,10 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: kilgharrah/src-tauri -> target
+          workspaces: src-tauri -> target
           key: ${{ matrix.target || 'windows' }}
 
       - name: Install frontend dependencies
-        working-directory: kilgharrah
         run: npm ci
 
       - uses: tauri-apps/tauri-action@v0
@@ -55,7 +54,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
-          projectPath: kilgharrah
           tagName: v__VERSION__
           releaseName: Kilgharrah v__VERSION__
           releaseBody: Download the build for your system. The app updates itself from here.
