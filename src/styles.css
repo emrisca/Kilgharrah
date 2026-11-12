@@ -189,6 +189,18 @@ button:disabled {
   height: 28px;
 }
 
+@media (max-width: 1020px) {
+  .top-actions .ghost-btn {
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .top-actions .ghost-btn span {
+    display: none;
+  }
+}
+
 .ghost-btn {
   display: inline-flex;
   align-items: center;

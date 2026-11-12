@@ -76,6 +76,7 @@ export default function App() {
           <button
             className="ghost-btn"
             title={state?.store ?? "Open the store"}
+            aria-label="Store"
             onClick={() => api.revealStore().catch((reason) => setError(String(reason)))}
           >
             {Icon.Folder}
