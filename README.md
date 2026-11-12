@@ -9,8 +9,8 @@
 A desktop manager for the skills and MCP servers the Freebuff CLI loads. Install from the ClawHub
 registry, keep your own skills in category folders, and flip one off without deleting its files.
 
-The Home section opens first: a medieval uncial wordmark, a short description, live counts, and
-an ASCII dragon drawn as line art over a slow rain of glyphs.
+The Home section opens first: a medieval display wordmark, a short description, live counts, and
+an ASCII dragon flapping over a slow rain of glyphs.
 
 ## What it touches
 
@@ -54,15 +54,17 @@ image library is needed.
 The Home section is the default tab. It renders three layers on top of the base
 theme:
 
-- The wordmark uses Uncial Antiqua, bundled at
-  `src/assets/fonts/uncial-antiqua-latin.woff2`, so the heading looks the same on
+- The wordmark uses Metamorphous, bundled at
+  `src/assets/fonts/metamorphous-latin.woff2`, so the heading looks the same on
   macOS and Windows instead of picking up whatever serif the system has. The face
   is licensed under the SIL Open Font License 1.1, and `src/assets/fonts/OFL.txt`
   keeps the licence text next to the file. Vite fingerprints the font into
   `dist/assets`, and `font-display: swap` falls back to Palatino while it loads.
-- `src/assets/wyrm.txt` holds the dragon as plain text. It is a line drawing, so
-  it stays sharp at any size and adds no image weight to the bundle. A blurred
-  copy sits behind the sharp one for the glow.
+- `src/assets/dragon.txt` holds thirty-one frames of the flying dragon as plain
+  text, each 70 by 23 characters. The frames were converted from a GIF, and the
+  forest behind the dragon was removed before the conversion, so only the
+  creature is drawn. A blurred copy sits behind the sharp one for the glow, and
+  the frame index advances every 60ms.
 - Twenty-two seeded columns of glyphs fall behind the copy. The seed keeps the
   layout stable when a skill is toggled elsewhere in the app.
 - A handful of embers rise past the art, timed on different loops so they do not
@@ -70,8 +72,8 @@ theme:
 
 All of it uses the active palette, including the sixth palette, Merlin (forest
 green and candle gold), which exists for this section. Under
-`prefers-reduced-motion` the rain, embers and glow are removed rather than sped
-up.
+`prefers-reduced-motion` the rain, embers and glow are removed and the dragon
+holds its first frame rather than flapping.
 
 ## Updates
 
@@ -117,8 +119,8 @@ instead of guessing one.
 kilgharrah/
   src/                   React views, the spring helper, the updater and the token sheet
   src/components/HomeView.tsx  Home section: rain, wordmark, dragon, embers
-  src/assets/fonts/      Bundled Uncial Antiqua web font and its OFL licence
-  src/assets/wyrm.txt    The dragon line art, imported as raw text
+  src/assets/dragon.txt  Thirty-one ASCII frames of the flying dragon
+  src/assets/fonts/      Bundled Metamorphous web font and its OFL licence
   src/updater.ts         Signed update check, download and relaunch
   src-tauri/src/         Rust commands: store, links, mcp.json, ClawHub
   .github/workflows/     Release build for macOS and Windows

@@ -1,8 +1,8 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { AppState } from "../types";
 import type { Tab } from "../App";
 import { Icon } from "./Icons";
-import wyrm from "../assets/wyrm.txt?raw";
+import dragon from "../assets/dragon.txt?raw";
 
 type Props = {
   state: AppState;
@@ -38,12 +38,29 @@ function makeColumns() {
   });
 }
 
-/// The banner art is a line drawing of the wyrm, kept as plain text so it stays
-/// sharp at any size and adds no image weight to the bundle.
-const ART = wyrm.replace(/\s+$/, "");
+/// The banner art is one flying dragon frame per block of text, cut from the
+/// GIF and kept as plain text so it stays sharp at any size and adds no image
+/// weight to the bundle.
+const FRAMES = dragon.trim().split(/\n~{8}\n/);
+const FRAME_MS = 60;
+
+function prefersCalm() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 export function HomeView({ state, onOpen }: Props) {
   const rain = useMemo(makeColumns, []);
+  const [frame, setFrame] = useState(0);
+
+  useEffect(() => {
+    if (prefersCalm()) return;
+    const timer = window.setInterval(() => {
+      setFrame((current) => (current + 1) % FRAMES.length);
+    }, FRAME_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const art = FRAMES[frame];
   const enabled = state.skills.filter((skill) => skill.enabled).length;
   const stored = state.skills.filter((skill) => skill.source === "store").length;
 
@@ -113,8 +130,8 @@ export function HomeView({ state, onOpen }: Props) {
 
         <div className="home-art" aria-hidden="true">
           <div className="home-glow" />
-          <pre className="home-art-layer home-art-ghost">{ART}</pre>
-          <pre className="home-art-layer home-art-ink">{ART}</pre>
+          <pre className="home-art-layer home-art-ghost">{art}</pre>
+          <pre className="home-art-layer home-art-ink">{art}</pre>
           <div className="home-embers">
             {Array.from({ length: 7 }, (_, index) => (
               <span

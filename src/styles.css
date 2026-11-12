@@ -1,11 +1,11 @@
 /* Bundled display face so the wordmark looks the same on every platform.
-   Uncial Antiqua, SIL Open Font License 1.1, licence text in src/assets/fonts. */
+   Metamorphous, SIL Open Font License 1.1, licence text in src/assets/fonts. */
 @font-face {
-  font-family: "Uncial Antiqua";
+  font-family: "Metamorphous";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("./assets/fonts/uncial-antiqua-latin.woff2") format("woff2");
+  src: url("./assets/fonts/metamorphous-latin.woff2") format("woff2");
 }
 
 /* Kilgharrah design tokens. Dark is the default, light is a full peer. */
@@ -30,7 +30,7 @@
   --sheet-bg: rgba(13, 16, 21, 0.9);
   --shadow: 0 18px 40px -24px rgba(0, 0, 0, 0.9);
   --serif: "Palatino Linotype", Palatino, "Book Antiqua", "Iowan Old Style", Cochin, Georgia, serif;
-  --display: "Uncial Antiqua", "Palatino Linotype", Palatino, Georgia, serif;
+  --display: "Metamorphous", "Palatino Linotype", Palatino, Georgia, serif;
 }
 
 [data-theme="light"] {
@@ -2195,10 +2195,10 @@ select.pill {
 .home-word {
   margin: 14px 0 0;
   font-family: var(--display);
-  font-size: clamp(44px, 6vw, 72px);
+  font-size: clamp(42px, 5.6vw, 68px);
   font-weight: 400;
-  letter-spacing: 0.01em;
-  line-height: 1.04;
+  letter-spacing: 0.005em;
+  line-height: 1.06;
   text-wrap: balance;
 }
 
@@ -2284,10 +2284,10 @@ select.pill {
   width: 100%;
   min-width: 0;
   justify-self: center;
-  /* The art carries a wide band of dots behind the head. Fade that band so
-     the head and neck read as a drawing instead of a hill. */
-  mask-image: linear-gradient(to right, transparent, #000 5%, #000 98%, transparent);
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 5%, #000 98%, transparent);
+  /* Fade the outer columns so the wing tips dissolve into the page instead of
+     stopping on a hard character edge. */
+  mask-image: linear-gradient(to right, transparent, #000 4%, #000 96%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 4%, #000 96%, transparent);
 }
 
 .home-art::before {
@@ -2322,10 +2322,13 @@ select.pill {
 .home-art-layer {
   margin: 0;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: clamp(5.6px, 1.2vw, 14.4px);
+  /* 70 columns: 1.15vw fills the art column down to the 940px window
+     minimum, and 14px caps it on wide screens. */
+  font-size: clamp(6px, 1.15vw, 14px);
   line-height: 1.04;
   letter-spacing: 0;
   white-space: pre;
+  font-variant-ligatures: none;
 }
 
 .home-art-ink {
