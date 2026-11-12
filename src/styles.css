@@ -116,7 +116,7 @@ button:disabled {
   z-index: 20;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   height: 44px;
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
@@ -137,10 +137,6 @@ button:disabled {
   width: 20px;
   height: 20px;
   background: url("./assets/mark.png") center / contain no-repeat;
-}
-
-[data-theme="light"] .brand-mark {
-  box-shadow: 0 0 0 1px var(--border);
 }
 
 .tabs {
@@ -186,6 +182,11 @@ button:disabled {
   align-items: center;
   gap: 6px;
   margin-left: auto;
+}
+
+.top-actions .icon-btn {
+  width: 28px;
+  height: 28px;
 }
 
 .ghost-btn {

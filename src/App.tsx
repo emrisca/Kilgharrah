@@ -58,7 +58,6 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">Kilgharrah</span>
         </div>
 
         <nav className="tabs" aria-label="Sections">
