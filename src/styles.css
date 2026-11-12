@@ -1184,7 +1184,8 @@ select.pill {
 
 .sheet-head {
   display: flex;
-  align-items: flex-start;
+  /* The close button belongs on the title line, not up beside the eyebrow. */
+  align-items: flex-end;
   justify-content: space-between;
   gap: 8px;
   padding: 10px;
@@ -2134,36 +2135,6 @@ select.pill {
   overflow: hidden;
 }
 
-.home-rain {
-  position: absolute;
-  inset: 0 0 0 34%;
-  overflow: hidden;
-  pointer-events: none;
-  mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 84%, transparent);
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14%, #000 84%, transparent);
-}
-
-.rain-col {
-  position: absolute;
-  top: 0;
-  color: var(--accent);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  line-height: 1.15;
-  white-space: pre;
-  animation-name: rain-fall;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
-}
-
-@keyframes rain-fall {
-  from {
-    transform: translateY(-32vh);
-  }
-  to {
-    transform: translateY(106vh);
-  }
-}
-
 .home-hero {
   position: relative;
   z-index: 2;
@@ -2241,6 +2212,20 @@ select.pill {
   gap: 8px;
 }
 
+.home-actions button {
+  flex: 1 1 160px;
+  height: 38px;
+  justify-content: center;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.home-actions .ghost-btn {
+  font-weight: 500;
+}
+
 .home-stats {
   display: flex;
   width: 100%;
@@ -2271,14 +2256,6 @@ select.pill {
   line-height: 1;
 }
 
-.home-foot {
-  margin: 20px 0 0;
-  color: var(--text-faint);
-  font-family: var(--serif);
-  font-size: 12px;
-  font-style: italic;
-}
-
 .home-art {
   position: relative;
   width: 100%;
@@ -2305,18 +2282,7 @@ select.pill {
   inset: 8% 0 22% 46%;
   background: radial-gradient(closest-side, var(--accent-soft), transparent 70%);
   filter: blur(12px);
-  animation: home-glow 8s ease-in-out infinite alternate;
-}
-
-@keyframes home-glow {
-  from {
-    opacity: 0.4;
-    transform: scale(0.97);
-  }
-  to {
-    opacity: 0.85;
-    transform: scale(1.03);
-  }
+  opacity: 0.62;
 }
 
 .home-art-layer {
@@ -2338,48 +2304,6 @@ select.pill {
   opacity: 0.88;
 }
 
-.home-art-ghost {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  color: var(--accent);
-  opacity: 0.22;
-  filter: blur(7px);
-}
-
-.home-embers {
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  pointer-events: none;
-}
-
-.home-embers span {
-  position: absolute;
-  bottom: 14%;
-  color: var(--accent);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 11px;
-  opacity: 0;
-  animation-name: ember-rise;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
-}
-
-@keyframes ember-rise {
-  0% {
-    opacity: 0;
-    transform: translateY(0);
-  }
-  18% {
-    opacity: 0.8;
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-170px);
-  }
-}
-
 @media (max-width: 920px) {
   .home-hero {
     grid-template-columns: minmax(0, 1fr);
@@ -2388,14 +2312,6 @@ select.pill {
   .home-art {
     max-width: 520px;
     opacity: 0.7;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .home-rain,
-  .home-embers,
-  .home-glow {
-    display: none;
   }
 }
 

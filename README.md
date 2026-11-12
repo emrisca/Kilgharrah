@@ -10,7 +10,7 @@ A desktop manager for the skills and MCP servers the Freebuff CLI loads. Install
 registry, keep your own skills in category folders, and flip one off without deleting its files.
 
 The Home section opens first: a medieval display wordmark, a short description, live counts, and
-an ASCII dragon flapping over a slow rain of glyphs.
+an ASCII dragon flapping.
 
 ## What it touches
 
@@ -51,7 +51,7 @@ image library is needed.
 
 ## Home
 
-The Home section is the default tab. It renders three layers on top of the base
+The Home section is the default tab. It renders two layers on top of the base
 theme:
 
 - The wordmark uses Metamorphous, bundled at
@@ -63,17 +63,12 @@ theme:
 - `src/assets/dragon.txt` holds thirty-one frames of the flying dragon as plain
   text, each 70 by 23 characters. The frames were converted from a GIF, and the
   forest behind the dragon was removed before the conversion, so only the
-  creature is drawn. A blurred copy sits behind the sharp one for the glow, and
-  the frame index advances every 60ms.
-- Twenty-two seeded columns of glyphs fall behind the copy. The seed keeps the
-  layout stable when a skill is toggled elsewhere in the app.
-- A handful of embers rise past the art, timed on different loops so they do not
-  pulse together.
+  creature is drawn. A still radial glow sits behind it, and the frame index
+  advances every 60ms. The dragon is the only thing on the page that moves.
 
-All of it uses the active palette, including the sixth palette, Merlin (forest
+Both layers use the active palette, including the sixth palette, Merlin (forest
 green and candle gold), which exists for this section. Under
-`prefers-reduced-motion` the rain, embers and glow are removed and the dragon
-holds its first frame rather than flapping.
+`prefers-reduced-motion` the dragon holds its first frame rather than flapping.
 
 ## Updates
 
@@ -118,7 +113,7 @@ instead of guessing one.
 ```
 kilgharrah/
   src/                   React views, the spring helper, the updater and the token sheet
-  src/components/HomeView.tsx  Home section: rain, wordmark, dragon, embers
+  src/components/HomeView.tsx  Home section: wordmark, copy, counts, dragon
   src/assets/dragon.txt  Thirty-one ASCII frames of the flying dragon
   src/assets/fonts/      Bundled Metamorphous web font and its OFL licence
   src/updater.ts         Signed update check, download and relaunch

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 const BASE: &str = "https://clawhub.ai";
 const AGENTIC_BASE: &str = "https://agenticskills.io";
 const AGENTIC_TTL: Duration = Duration::from_secs(600);
+const MARKET_TTL: Duration = Duration::from_secs(300);
 const MAX_FILES: usize = 200;
 const MAX_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_READ: u64 = 512 * 1024;
@@ -1251,15 +1252,23 @@ fn delete_server(name: String) -> Result<AppState, String> {
     build_state()
 }
 
+// The marketplace lives behind the network, so the command runs off the webview
+// thread. A synchronous command would hold the window still for the whole call.
 #[tauri::command]
-fn search_market(query: String, limit: Option<u32>) -> Result<Vec<CatalogItem>, String> {
+async fn search_market(query: String, limit: Option<u32>) -> Result<Vec<CatalogItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || search_market_now(query, limit))
+        .await
+        .map_err(|error| format!("The marketplace search stopped: {error}"))?
+}
+
+fn search_market_now(query: String, limit: Option<u32>) -> Result<Vec<CatalogItem>, String> {
     let limit = limit.unwrap_or(24).clamp(1, 300) as usize;
     let query = query.trim().to_string();
     let agentic = agentic_pool().unwrap_or_default();
     let mut items: Vec<CatalogItem> = Vec::new();
 
     if query.is_empty() {
-        items = skill_pool(limit)?;
+        items = market_pool()?;
         items.extend(agentic);
     } else {
         let encoded = encode(&query);
@@ -1283,6 +1292,35 @@ fn search_market(query: String, limit: Option<u32>) -> Result<Vec<CatalogItem>, 
     }
 
     Ok(merge_items(items, limit))
+}
+
+fn market_pool() -> Result<Vec<CatalogItem>, String> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, Vec<CatalogItem>)>>> = OnceLock::new();
+    let lock = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = lock.lock() {
+        if let Some((at, items)) = guard.as_ref() {
+            if at.elapsed() < MARKET_TTL {
+                return Ok(items.clone());
+            }
+        }
+    }
+    match skill_pool(200) {
+        Ok(items) => {
+            let pool = merge_items(items, 200);
+            if let Ok(mut guard) = lock.lock() {
+                *guard = Some((Instant::now(), pool.clone()));
+            }
+            Ok(pool)
+        }
+        Err(error) => {
+            if let Ok(guard) = lock.lock() {
+                if let Some((_, items)) = guard.as_ref() {
+                    return Ok(items.clone());
+                }
+            }
+            Err(error)
+        }
+    }
 }
 
 fn skill_pool(limit: usize) -> Result<Vec<CatalogItem>, String> {
