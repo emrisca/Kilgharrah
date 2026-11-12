@@ -38,9 +38,11 @@ Build a bundle:
 npm run tauri build
 ```
 
-The app has no Swift or native dependencies outside Tauri. The icon set comes from
-`python3 scripts/make-icon.py` and the README banner from `python3 scripts/make-banner.py`. Both draw
-`ascii-art.txt` directly with plain Python, so no image library is needed.
+The app has no Swift or native dependencies outside Tauri. The Dock icon comes from
+`assets/kilicon.png`, and `npx tauri icon assets/kilicon.png` rebuilds the bundle set from it. The
+README banner comes from `python3 scripts/make-banner.py`, and the in-app mark from
+`python3 scripts/make-icon.py`. Both draw `ascii-art.txt` directly with plain Python, so no image
+library is needed.
 
 ## Marketplace
 
@@ -72,7 +74,7 @@ instead of guessing one.
 kilgharrah/
   src/                   React views, the spring helper and the token sheet
   src-tauri/src/         Rust commands: store, links, mcp.json, ClawHub
-  assets/                README banner, dark and light
+  assets/                App icon source and the README banner, dark and light
   ascii-art.txt          Source art for the icon and the banner
   scripts/ascii_render.py Glyph and tile renderer used by both scripts
   scripts/make-icon.py   Renders the PNG, icns, ico set and the in-app mark
