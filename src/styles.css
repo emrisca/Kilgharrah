@@ -1,3 +1,13 @@
+/* Bundled display face so the wordmark looks the same on every platform.
+   Uncial Antiqua, SIL Open Font License 1.1, licence text in src/assets/fonts. */
+@font-face {
+  font-family: "Uncial Antiqua";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/uncial-antiqua-latin.woff2") format("woff2");
+}
+
 /* Kilgharrah design tokens. Dark is the default, light is a full peer. */
 :root {
   color-scheme: dark;
@@ -20,6 +30,7 @@
   --sheet-bg: rgba(13, 16, 21, 0.9);
   --shadow: 0 18px 40px -24px rgba(0, 0, 0, 0.9);
   --serif: "Palatino Linotype", Palatino, "Book Antiqua", "Iowan Old Style", Cochin, Georgia, serif;
+  --display: "Uncial Antiqua", "Palatino Linotype", Palatino, Georgia, serif;
 }
 
 [data-theme="light"] {
@@ -2182,13 +2193,13 @@ select.pill {
 }
 
 .home-word {
-  margin: 12px 0 0;
-  font-family: var(--serif);
-  font-size: clamp(40px, 5.4vw, 64px);
+  margin: 14px 0 0;
+  font-family: var(--display);
+  font-size: clamp(44px, 6vw, 72px);
   font-weight: 400;
-  letter-spacing: 0.1em;
-  line-height: 1;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  line-height: 1.04;
+  text-wrap: balance;
 }
 
 .home-rule {

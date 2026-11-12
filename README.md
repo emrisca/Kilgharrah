@@ -9,8 +9,8 @@
 A desktop manager for the skills and MCP servers the Freebuff CLI loads. Install from the ClawHub
 registry, keep your own skills in category folders, and flip one off without deleting its files.
 
-The Home section opens first: a serif wordmark, a short description, live counts, and an ASCII
-dragon drawn as line art over a slow rain of glyphs.
+The Home section opens first: a medieval uncial wordmark, a short description, live counts, and
+an ASCII dragon drawn as line art over a slow rain of glyphs.
 
 ## What it touches
 
@@ -54,6 +54,12 @@ image library is needed.
 The Home section is the default tab. It renders three layers on top of the base
 theme:
 
+- The wordmark uses Uncial Antiqua, bundled at
+  `src/assets/fonts/uncial-antiqua-latin.woff2`, so the heading looks the same on
+  macOS and Windows instead of picking up whatever serif the system has. The face
+  is licensed under the SIL Open Font License 1.1, and `src/assets/fonts/OFL.txt`
+  keeps the licence text next to the file. Vite fingerprints the font into
+  `dist/assets`, and `font-display: swap` falls back to Palatino while it loads.
 - `src/assets/wyrm.txt` holds the dragon as plain text. It is a line drawing, so
   it stays sharp at any size and adds no image weight to the bundle. A blurred
   copy sits behind the sharp one for the glow.
@@ -111,6 +117,7 @@ instead of guessing one.
 kilgharrah/
   src/                   React views, the spring helper, the updater and the token sheet
   src/components/HomeView.tsx  Home section: rain, wordmark, dragon, embers
+  src/assets/fonts/      Bundled Uncial Antiqua web font and its OFL licence
   src/assets/wyrm.txt    The dragon line art, imported as raw text
   src/updater.ts         Signed update check, download and relaunch
   src-tauri/src/         Rust commands: store, links, mcp.json, ClawHub
