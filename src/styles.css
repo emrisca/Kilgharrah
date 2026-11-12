@@ -140,11 +140,11 @@ button:disabled {
   display: block;
   width: 20px;
   height: 20px;
-  background: url("./assets/mark-dark.png") center / contain no-repeat;
+  background: url("./assets/mark.png") center / contain no-repeat;
 }
 
 [data-theme="light"] .brand-mark {
-  background-image: url("./assets/mark-light.png");
+  box-shadow: 0 0 0 1px var(--border);
 }
 
 .tabs {

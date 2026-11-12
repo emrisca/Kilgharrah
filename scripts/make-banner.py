@@ -3,8 +3,10 @@
 
 Writes a dark and a light variant so the README can pick one per theme with a
 <picture> element. No image library, no fonts: every mark comes from the art's
-own characters. The art sits at roughly two thirds of the canvas width so the
-dragon has room to breathe inside a wide banner.
+own characters. Characters are drawn in grey on the bare panel, the same way
+the app icon draws them, so the banner and the icon stay one family. The art
+sits at roughly two thirds of the canvas width so the dragon has room to
+breathe inside a wide banner.
 """
 
 import os
@@ -16,20 +18,20 @@ ART_WIDTH = 0.66
 RADIUS = 24
 CELL_ASPECT = 0.56
 
-# (fill, glyph, glyph alpha). `#` is the dark field, ` ` the lit subject.
-# The fill sits far below the glyph so the characters still read as text.
+# (fill, glyph, glyph alpha). No fills: like the app icon, the dragon is
+# made of grey characters on the bare panel rather than solid tiles.
 DARK = {
-    "#": ((0.030, 0.036, 0.046), (0.10, 0.13, 0.16), 1.0),
-    "+": ((0.030, 0.12, 0.07), (0.10, 0.42, 0.25), 1.0),
-    ".": ((0.045, 0.19, 0.11), (0.17, 0.68, 0.40), 1.0),
-    " ": ((0.10, 0.42, 0.26), (0.52, 1.0, 0.74), 1.0),
+    "#": (None, (0.16, 0.165, 0.175), 1.0),
+    "+": (None, (0.55, 0.56, 0.58), 1.0),
+    ".": (None, (0.86, 0.87, 0.89), 1.0),
+    " ": (None, (0.98, 0.985, 0.99), 1.0),
 }
 
 LIGHT = {
-    "#": ((0.972, 0.976, 0.980), (0.87, 0.88, 0.90), 1.0),
-    "+": ((0.90, 0.94, 0.91), (0.56, 0.75, 0.65), 1.0),
-    ".": ((0.68, 0.86, 0.76), (0.18, 0.50, 0.34), 1.0),
-    " ": ((0.26, 0.58, 0.41), (0.02, 0.24, 0.14), 1.0),
+    "#": (None, (0.925, 0.930, 0.935), 1.0),
+    "+": (None, (0.62, 0.63, 0.64), 1.0),
+    ".": (None, (0.34, 0.35, 0.36), 1.0),
+    " ": (None, (0.10, 0.105, 0.11), 1.0),
 }
 
 
@@ -64,8 +66,7 @@ def render(rows, base, panel, destination):
                 canvas.blend(x, y, panel, alpha)
 
     cell_w, cell_h, origin_x, origin_y = layout(rows)
-    delta = 0.05 if sum(panel) < 1.5 else -0.05
-    draw_cells(canvas, rows, origin_x, origin_y, cell_w, cell_h, field_tones(base, panel, delta))
+    draw_cells(canvas, rows, origin_x, origin_y, cell_w, cell_h, base, glyph_char="#")
     canvas.write_png(destination)
     print("wrote", destination, f"{width}x{height}", f"art {len(rows[0]) * cell_w:.0f}px wide")
 

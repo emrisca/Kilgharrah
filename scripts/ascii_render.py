@@ -168,11 +168,13 @@ def draw_glyph(canvas, cell_x, cell_y, cell_w, cell_h, char, color, alpha, sampl
             canvas.blend(x, y, color, alpha * coverage)
 
 
-def draw_cells(canvas, rows, origin_x, origin_y, cell_w, cell_h, tones, tint=None):
+def draw_cells(canvas, rows, origin_x, origin_y, cell_w, cell_h, tones, tint=None, glyph_char=None):
     """Paint each character as a filled tone cell with its glyph on top.
 
     `tones` maps a character to (fill_rgb, glyph_rgb, glyph_alpha). The fill
     carries the picture's light and the glyph keeps the text origin visible.
+    Pass `glyph_char` to draw the same dense glyph in every cell, so the tone
+    colour alone carries the picture the way the app icon does.
     """
 
     for row_index, row in enumerate(rows):
@@ -187,7 +189,7 @@ def draw_cells(canvas, rows, origin_x, origin_y, cell_w, cell_h, tones, tint=Non
                     for x in range(int(cell_x), int(cell_x + cell_w)):
                         canvas.blend(x, y, fill, 1.0)
             if glyph is not None:
-                draw_glyph(canvas, cell_x, cell_y, cell_w, cell_h, char, glyph, glyph_alpha)
+                draw_glyph(canvas, cell_x, cell_y, cell_w, cell_h, glyph_char or char, glyph, glyph_alpha)
 
 
 
