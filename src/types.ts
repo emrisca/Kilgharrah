@@ -136,6 +136,11 @@ export type InstallJob = {
   percent: number;
 };
 
+export type AgenticChoice = {
+  name: string;
+  path: string;
+};
+
 export type CatalogItem = {
   id: string;
   kind: "skill" | "plugin" | "bundle";

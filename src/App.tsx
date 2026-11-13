@@ -108,7 +108,7 @@ export default function App() {
     return () => stops.forEach((stop) => stop());
   }, []);
 
-  const startInstall = useCallback(async (item: CatalogItem, target: string | null) => {
+  const startInstall = useCallback(async (item: CatalogItem, target: string | null, sub: string | null = null) => {
     const id = `install:${item.slug}`;
     installNames.current.set(id, item.name);
     setInstalls((rows) =>
@@ -120,7 +120,7 @@ export default function App() {
           ]
     );
     try {
-      await api.startInstall(item.slug, item.owner, target, item.market);
+      await api.startInstall(item.slug, item.owner, target, item.market, sub);
     } catch (reason) {
       installNames.current.delete(id);
       setInstalls((rows) => rows.filter((row) => row.id !== id));

@@ -2475,61 +2475,87 @@ fn github_parts(url: &str) -> Option<(String, String, Option<(String, String)>)>
     Some((owner, repo, nested))
 }
 
-/// Reads the GitHub source for one AgenticSkills page. The page embeds the
-/// skill's own `githubUrl` next to other related skills, so the lookup starts
-/// at this skill's slug instead of taking the first link on the page.
-fn agentic_source(slug: &str) -> Result<AgenticSource, String> {
-    let html = get_text(&format!("{AGENTIC_BASE}/skills/{}", encode(slug)))?;
-    let page = html.replace("\\\"", "\"");
+/// The GitHub link agenticskills.io gives one skill. The page embeds
+/// `githubUrl` next to other related skills, so the lookup starts at this
+/// skill's slug instead of taking the first link on the page.
+fn own_github_url(slug: &str, page: &str) -> Result<Option<String>, String> {
     let own = Regex::new(&format!(
         r#"(?s)"slug":"{}".*?"githubUrl":"(https://github\.com/[^"]+)""#,
         regex::escape(slug)
     ))
     .map_err(|e| format!("Could not read the skill page: {e}"))?;
-    if let Some(caps) = own.captures(&page) {
-        let url = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-        if let Some((owner, repo, nested)) = github_parts(url) {
+    Ok(own
+        .captures(page)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string())))
+}
+
+/// The default branch of one repo, which is the ref every raw URL here uses.
+fn default_branch(owner: &str, repo: &str) -> Result<String, String> {
+    let meta = get_json(&format!(
+        "https://api.github.com/repos/{}/{}",
+        encode(owner),
+        encode(repo)
+    ))?;
+    meta.get("default_branch")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .ok_or_else(|| "GitHub lists no default branch for that skill.".to_string())
+}
+
+/// Every folder in a repo that holds a SKILL.md, relative to the repo root.
+fn github_skill_dirs(owner: &str, repo: &str, git_ref: &str) -> Result<Vec<String>, String> {
+    let tree = get_json(&format!(
+        "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+        encode(owner),
+        encode(repo),
+        encode(git_ref)
+    ))?;
+    if tree.get("truncated").and_then(|v| v.as_bool()) == Some(true) {
+        return Err("That GitHub repo is too large for Kilgharrah to scan.".into());
+    }
+    let mut dirs: Vec<String> = tree
+        .get("tree")
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("path").and_then(|v| v.as_str()))
+                .filter(|path| *path == "SKILL.md" || path.ends_with("/SKILL.md"))
+                .map(|path| path.trim_end_matches("SKILL.md").trim_end_matches('/').to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    dirs.sort();
+    dirs.dedup();
+    Ok(dirs)
+}
+
+/// Reads the GitHub source for one AgenticSkills page. `sub` is the folder the
+/// install sheet picked when the repo holds several skills.
+fn agentic_source(slug: &str, sub: Option<&str>) -> Result<AgenticSource, String> {
+    let html = get_text(&format!("{AGENTIC_BASE}/skills/{}", encode(slug)))?;
+    let page = html.replace("\\\"", "\"");
+    if let Some(url) = own_github_url(slug, &page)? {
+        if let Some((owner, repo, nested)) = github_parts(&url) {
             let (git_ref, dir) = if let Some((git_ref, dir)) = nested {
                 (git_ref, dir)
             } else {
-                let meta = get_json(&format!(
-                    "https://api.github.com/repos/{}/{}",
-                    encode(&owner),
-                    encode(&repo)
-                ))?;
-                let branch = meta
-                    .get("default_branch")
-                    .and_then(|v| v.as_str())
-                    .ok_or("GitHub lists no default branch for that skill.")?
-                    .to_string();
-                let tree = get_json(&format!(
-                    "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
-                    encode(&owner),
-                    encode(&repo),
-                    encode(&branch)
-                ))?;
-                if tree.get("truncated").and_then(|v| v.as_bool()) == Some(true) {
-                    return Err("That GitHub repo is too large for Kilgharrah to scan.".into());
-                }
-                let skills: Vec<String> = tree
-                    .get("tree")
-                    .and_then(|v| v.as_array())
-                    .map(|rows| {
-                        rows.iter()
-                            .filter_map(|row| row.get("path").and_then(|v| v.as_str()))
-                            .filter(|path| *path == "SKILL.md" || path.ends_with("/SKILL.md"))
-                            .map(|path| path.trim_end_matches("SKILL.md").trim_end_matches('/').to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let branch = default_branch(&owner, &repo)?;
+                let skills = github_skill_dirs(&owner, &repo, &branch)?;
                 match skills.len() {
                     0 => return Err("That GitHub repo has no SKILL.md.".into()),
                     1 => (branch, skills[0].clone()),
                     _ => {
-                        return Err(format!(
-                            "That GitHub repo holds {} skills, so Kilgharrah cannot pick one. Open the repo and install the skill you want.",
-                            skills.len()
-                        ))
+                        let wanted = sub.ok_or_else(|| {
+                            format!(
+                                "That GitHub repo holds {} skills. Pick one in the install sheet.",
+                                skills.len()
+                            )
+                        })?;
+                        let found = skills
+                            .iter()
+                            .find(|entry| entry.eq_ignore_ascii_case(wanted))
+                            .ok_or("That GitHub repo has no skill in that folder.")?;
+                        (branch, found.to_string())
                     }
                 }
             };
@@ -3196,7 +3222,18 @@ fn preview_market(
         return Err("That skill name is not valid.".into());
     }
     if market.as_deref() == Some("agentic") {
-        let source = agentic_source(&slug)?;
+        // A repo with several skills previews its first one until the sheet
+        // asks for another.
+        let source = match agentic_source(&slug, None) {
+            Ok(source) => source,
+            Err(_) => {
+                let first = agentic_choice_list(&slug)?
+                    .into_iter()
+                    .next()
+                    .ok_or("That GitHub repo has no SKILL.md.")?;
+                agentic_source(&slug, Some(&first.path))?
+            }
+        };
         let bytes = get_bytes(&source.raw)?;
         let text = String::from_utf8_lossy(&bytes).to_string();
         return Ok(text.chars().take(PREVIEW_CHARS).collect());
@@ -3208,6 +3245,65 @@ fn preview_market(
     let bytes = get_bytes(&url)?;
     let text = String::from_utf8_lossy(&bytes).to_string();
     Ok(text.chars().take(PREVIEW_CHARS).collect())
+}
+
+#[derive(Clone, Serialize)]
+struct AgenticChoice {
+    name: String,
+    path: String,
+}
+
+/// The folder name is what the skill is called, and the repo name stands in
+/// when the SKILL.md sits at the root.
+fn choice_name(repo: &str, dir: &str) -> String {
+    if dir.is_empty() {
+        repo.to_string()
+    } else {
+        dir.rsplit('/').next().unwrap_or(dir).to_string()
+    }
+}
+
+/// Lists what one marketplace repo holds, so a repo with several skills can be
+/// installed from the sheet instead of a terminal.
+fn agentic_choice_list(slug: &str) -> Result<Vec<AgenticChoice>, String> {
+    let html = get_text(&format!("{AGENTIC_BASE}/skills/{}", encode(slug)))?;
+    let page = html.replace("\\\"", "\"");
+    let url = own_github_url(slug, &page)?
+        .ok_or("agenticskills.io lists no GitHub source for that skill.")?;
+    let (owner, repo, nested) = github_parts(&url)
+        .ok_or("agenticskills.io lists no GitHub source for that skill.")?;
+    if let Some((_, dir)) = nested {
+        return Ok(vec![AgenticChoice { name: choice_name(&repo, &dir), path: dir }]);
+    }
+    let branch = default_branch(&owner, &repo)?;
+    let dirs = github_skill_dirs(&owner, &repo, &branch)?;
+    if dirs.is_empty() {
+        return Err("That GitHub repo has no SKILL.md.".into());
+    }
+    let mut choices: Vec<AgenticChoice> = dirs
+        .into_iter()
+        .map(|dir| AgenticChoice { name: choice_name(&repo, &dir), path: dir })
+        .collect();
+    // Two folders can end in the same name, so the full path tells them apart.
+    let repeated: Vec<String> = choices
+        .iter()
+        .filter(|choice| choices.iter().filter(|other| other.name == choice.name).count() > 1)
+        .map(|choice| choice.name.clone())
+        .collect();
+    for choice in choices.iter_mut() {
+        if repeated.contains(&choice.name) {
+            choice.name = choice.path.clone();
+        }
+    }
+    Ok(choices)
+}
+
+#[tauri::command(async)]
+fn agentic_choices(slug: String) -> Result<Vec<AgenticChoice>, String> {
+    if !safe_segment(&slug) {
+        return Err("That skill name is not valid.".into());
+    }
+    agentic_choice_list(&slug)
 }
 
 #[derive(Clone, Serialize)]
@@ -3226,6 +3322,7 @@ fn install_market(
     owner: Option<String>,
     category: Option<String>,
     market: Option<String>,
+    sub: Option<String>,
 ) -> Result<String, String> {
     if !safe_segment(&slug) {
         return Err("That skill name is not valid.".into());
@@ -3243,7 +3340,7 @@ fn install_market(
                 },
             );
         };
-        match install_market_task(&slug, owner, category, market, &progress) {
+        match install_market_task(&slug, owner, category, market, sub, &progress) {
             Ok(state) => {
                 let _ = app.emit("install-finished", json!({ "id": task_id, "state": state }));
             }
@@ -3327,11 +3424,12 @@ fn install_market_task(
     owner: Option<String>,
     category: Option<String>,
     market: Option<String>,
+    sub: Option<String>,
     progress: &dyn Fn(u8, &str),
 ) -> Result<AppState, String> {
     ensure_store()?;
     if market.as_deref() == Some("agentic") {
-        return install_agentic(slug, category, progress);
+        return install_agentic(slug, category, sub, progress);
     }
     progress(6, "Reading the skill");
     let owner = owner.unwrap_or_default().trim().to_string();
@@ -3456,17 +3554,24 @@ fn collect_github(
 fn install_agentic(
     slug: &str,
     category: Option<String>,
+    sub: Option<String>,
     progress: &dyn Fn(u8, &str),
 ) -> Result<AppState, String> {
     progress(8, "Finding the GitHub source");
-    let source = agentic_source(slug)?;
+    let source = agentic_source(slug, sub.as_deref())?;
+    // The folder in the repo names the skill, so two skills from one repo keep
+    // their own folders instead of sharing the marketplace slug.
+    let name = match sub.as_deref().map(|path| path.trim_end_matches('/')) {
+        Some(path) if !path.is_empty() => path.rsplit('/').next().unwrap_or(slug).to_string(),
+        _ => slug.to_string(),
+    };
     let chosen = match category {
         Some(id) if safe_segment(&id) && skills_store().join(&id).is_dir() => id,
         _ => "other".to_string(),
     };
-    let dir = skills_store().join(&chosen).join(slug);
+    let dir = skills_store().join(&chosen).join(&name);
     if dir.exists() {
-        return Err(format!("{slug} is already installed in {chosen}."));
+        return Err(format!("{name} is already installed in {chosen}."));
     }
     fs::create_dir_all(&dir).map_err(|e| format!("Could not create the skill folder: {e}"))?;
     let base = source.path.clone();
@@ -3487,7 +3592,7 @@ fn install_agentic(
     if let Err(error) = write_meta(
         &dir,
         &InstalledMeta {
-            name: slug.to_string(),
+            name: name.clone(),
             origin: "agentic".into(),
             upstream: Some(format!("{}/{}/{}", source.owner, source.repo, source.path)),
             version: None,
@@ -3500,7 +3605,7 @@ fn install_agentic(
         return Err(error);
     }
     progress(94, "Linking the skill");
-    if let Err(error) = link_skill(slug, &dir) {
+    if let Err(error) = link_skill(&name, &dir) {
         let _ = fs::remove_dir_all(&dir);
         return Err(error);
     }
@@ -4019,6 +4124,7 @@ fn main() {
             delete_server,
             search_market,
             preview_market,
+            agentic_choices,
             install_market,
             list_skill_files,
             read_skill_file,

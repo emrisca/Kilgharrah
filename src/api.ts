@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgenticChoice,
   AppState,
   CatalogItem,
   Diagnostics,
@@ -90,12 +91,15 @@ export const api = {
   previewMarket: (slug: string, owner: string | null, market: MarketSource) =>
     invoke<string>("preview_market", { slug, owner, market }),
 
+  agenticChoices: (slug: string) => invoke<AgenticChoice[]>("agentic_choices", { slug }),
+
   startInstall: (
     slug: string,
     owner: string | null,
     category: string | null,
-    market: MarketSource
-  ) => invoke<string>("install_market", { slug, owner, category, market }),
+    market: MarketSource,
+    sub: string | null = null
+  ) => invoke<string>("install_market", { slug, owner, category, market, sub }),
 
   openUrl: (url: string) => invoke<void>("open_url", { url }),
 

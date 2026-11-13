@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { AppState, CatalogItem, InstallJob, Skill, SkillFile } from "../types";
+import type {
+  AgenticChoice,
+  AppState,
+  CatalogItem,
+  InstallJob,
+  Skill,
+  SkillFile
+} from "../types";
 import { Icon } from "./Icons";
 import { Markdown } from "./Markdown";
 import { Sheet } from "./Sheet";
@@ -36,7 +43,7 @@ type Props = {
   notify: (message: string) => void;
   onError: (message: string) => void;
   installs: InstallJob[];
-  onInstall: (item: CatalogItem, target: string | null) => void;
+  onInstall: (item: CatalogItem, target: string | null, sub?: string | null) => void;
 };
 
 export function SkillsView({ state, onState, notify, onError, installs, onInstall }: Props) {
@@ -210,9 +217,9 @@ export function SkillsView({ state, onState, notify, onError, installs, onInstal
     }
   };
 
-  const install = (item: CatalogItem, target?: string) => {
+  const install = (item: CatalogItem, target?: string, sub?: string | null) => {
     if (jobFor(item)) return;
-    onInstall(item, target ?? null);
+    onInstall(item, target ?? null, sub ?? null);
   };
 
   const copy = async (text: string) => {
@@ -919,7 +926,7 @@ function MarketDetail({
   item: CatalogItem;
   state: AppState;
   job?: InstallJob;
-  onInstall: (item: CatalogItem, category?: string) => void;
+  onInstall: (item: CatalogItem, category?: string, sub?: string | null) => void;
   onError: (message: string) => void;
 }) {
   const storeCategories = state.categories.filter((entry) => entry.source === "store");
@@ -928,6 +935,8 @@ function MarketDetail({
   );
   const [preview, setPreview] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(true);
+  const [choices, setChoices] = useState<AgenticChoice[] | null>(null);
+  const [choiceIndex, setChoiceIndex] = useState(0);
   const label =
     MARKET_CATEGORIES.find((entry) => entry.id === item.category)?.label ?? item.category;
 
@@ -949,6 +958,26 @@ function MarketDetail({
       .finally(() => {
         if (alive) setPreviewing(false);
       });
+    return () => {
+      alive = false;
+    };
+  }, [item.id]);
+
+  useEffect(() => {
+    let alive = true;
+    setChoices(null);
+    setChoiceIndex(0);
+    if (item.installable && item.market === "agentic") {
+      api
+        .agenticChoices(item.slug)
+        .then((rows) => {
+          if (alive) setChoices(rows);
+        })
+        .catch(() => {
+          // The install path reports the same failure with more detail.
+          if (alive) setChoices(null);
+        });
+    }
     return () => {
       alive = false;
     };
@@ -996,6 +1025,26 @@ function MarketDetail({
             </select>
           </section>
 
+          {choices && choices.length > 1 && (
+            <section className="sheet-section">
+              <span className="sheet-label">Skill in this repo</span>
+              <select
+                className="input"
+                value={choiceIndex}
+                onChange={(event) => setChoiceIndex(Number(event.target.value))}
+              >
+                {choices.map((choice, index) => (
+                  <option key={choice.path || choice.name} value={index}>
+                    {choice.name}
+                  </option>
+                ))}
+              </select>
+              <p className="sheet-note">
+                That repo holds {choices.length} skills. Kilgharrah installs the one you pick.
+              </p>
+            </section>
+          )}
+
           <section className="sheet-section">
             <span className="sheet-label">SKILL.md</span>
             {previewing ? (
@@ -1016,7 +1065,7 @@ function MarketDetail({
             <button
               className="primary"
               disabled={Boolean(job)}
-              onClick={() => onInstall(item, category)}
+              onClick={() => onInstall(item, category, choices?.[choiceIndex]?.path ?? null)}
             >
               {job ? Icon.Spinner : Icon.Plus}
               {job ? `Installing ${job.percent}%` : "Install skill"}
