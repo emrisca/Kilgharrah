@@ -53,15 +53,24 @@ keeps the defaults: Home scope, the first agent in the list, and no profile.
 | Codex CLI | `~/.codex/skills` |
 | Gemini CLI | `~/.gemini/skills` |
 
-A profile is a skill set plus its MCP servers. The built-in Hermes profile copies `~/.hermes/skills`
-and merges servers from `~/.hermes/mcp.json` when that file exists. Settings, Profiles can also
-export the current skills and servers to `~/.agents/kilgharrah/profiles/<name>.json`. Applying a
-profile copies its skills into the library. Every copied file stays editable and removable, so a
+A profile is a skill set plus its MCP servers. The built-in Emrys profile reads the Hermes install
+itself: `$HERMES_HOME/skills`, or `~/.hermes/skills` when that variable is not set, with servers
+from the `config.yaml` or `mcp.json` beside it. Emrys is meant to travel, so it leaves out any skill
+whose `platforms:` field does not list both macOS and Windows; a macOS-only skill such as iMessage is
+no use on the other machine. The profile row names what it left out. Settings, Profiles lists the
+skills and servers a profile holds and the folder it reads, exports any profile to a JSON file you
+choose, and imports a file from another machine. Import copies the skills into the library and merges the servers in one
+step, which is what a clean machine needs. Every copied file stays editable and removable, so a
 profile is a starting point, not a locked bundle. Skills that came from a profile show its name in
 their details.
 
 Deleting a profile removes only its JSON file. Skills already copied into the library stay, and the
-built-in Hermes profile cannot be deleted.
+built-in Emrys profile cannot be deleted.
+
+Settings, Scan looks in the folders other tools already keep skills in (`~/.agents/skills`,
+`~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills` and the Hermes folder) and lists what is
+not in the library yet. A mirror that is a symlink back into the library is skipped. Import copies
+the folder into the library and links it to the chosen agent.
 
 ## Run it
 

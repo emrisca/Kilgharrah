@@ -3,6 +3,7 @@ import type {
   AppState,
   CatalogItem,
   Diagnostics,
+  DiscoveredSkill,
   MarketSource,
   SkillFile,
   SkillSource,
@@ -62,11 +63,19 @@ export const api = {
       profile: input.profile
     }),
 
-  exportProfile: (name: string) => invoke<string>("export_profile", { name }),
+  exportProfile: (name: string, path: string | null = null) =>
+    invoke<string>("export_profile", { name, path }),
+
+  importProfile: (path: string) => invoke<AppState>("import_profile", { path }),
 
   applyProfile: (name: string) => invoke<AppState>("apply_profile", { name }),
 
   deleteProfile: (name: string) => invoke<AppState>("delete_profile", { name }),
+
+  scanInstalledSkills: () => invoke<DiscoveredSkill[]>("scan_installed_skills"),
+
+  importInstalledSkills: (paths: string[]) =>
+    invoke<AppState>("import_installed_skills", { paths }),
 
   diagnostics: () => invoke<Diagnostics>("diagnostics"),
 

@@ -85,7 +85,24 @@ export type ProfileInfo = {
   skills: number;
   servers: number;
   serverNames: string[];
+  skillNames: string[];
+  excludedNames: string[];
+  location: string;
   builtin: boolean;
+};
+
+export type DiscoveredSkill = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  category: string;
+  source: string;
+  path: string;
+  files: number;
+  platforms: string[];
+  portable: boolean;
+  inLibrary: boolean;
 };
 
 export type McpServer = {

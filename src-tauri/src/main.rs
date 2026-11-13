@@ -299,6 +299,9 @@ struct ProfileInfo {
     skills: usize,
     servers: usize,
     server_names: Vec<String>,
+    skill_names: Vec<String>,
+    excluded_names: Vec<String>,
+    location: String,
     builtin: bool,
 }
 
@@ -366,10 +369,14 @@ struct CatalogItem {
 // ---------------------------------------------------------------- locations
 
 fn home_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .unwrap_or_default();
-    PathBuf::from(home)
+    // Some Windows shells export HOME as a POSIX path (`/c/Users/me`) that no
+    // Windows file API accepts, so prefer the native variable there.
+    let home = if cfg!(windows) {
+        std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
+    } else {
+        std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+    };
+    PathBuf::from(home.unwrap_or_default())
 }
 
 fn agents_root() -> PathBuf {
@@ -379,11 +386,25 @@ fn agents_root() -> PathBuf {
     home_dir().join(".agents")
 }
 
+/// The first Hermes skills folder that exists. Hermes itself honours
+/// HERMES_HOME, and its home may sit next to the skills folder or point at it.
 fn hermes_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("KILGHARRAH_HERMES") {
         return PathBuf::from(custom);
     }
-    home_dir().join(".hermes").join("skills")
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(home) = std::env::var_os("HERMES_HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join("skills"));
+        candidates.push(home);
+    }
+    candidates.push(home_dir().join(".hermes").join("skills"));
+    candidates.push(home_dir().join("hermes").join("skills"));
+    candidates
+        .iter()
+        .find(|path| path.is_dir())
+        .cloned()
+        .unwrap_or_else(|| home_dir().join(".hermes").join("skills"))
 }
 
 fn store_root() -> PathBuf {
@@ -878,9 +899,11 @@ fn walk_profile_files(dir: &Path, base: &Path, depth: usize, out: &mut Vec<Profi
     }
 }
 
-fn profile_snapshot(name: &str) -> Result<Profile, String> {
-    let mut candidates = Vec::new();
-    collect_skills(skills_store(), "store", &mut candidates);
+fn snapshot_profile(
+    name: &str,
+    candidates: Vec<(PathBuf, String, String)>,
+    servers: Vec<ProfileServer>,
+) -> Result<Profile, String> {
     let mut skills = Vec::new();
     let mut total = 0usize;
     for (dir, category, _) in candidates {
@@ -889,6 +912,9 @@ fn profile_snapshot(name: &str) -> Result<Profile, String> {
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_string();
+        if slug.is_empty() {
+            continue;
+        }
         let text = fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
         let (display, description) = parse_frontmatter(&text);
         let mut files = Vec::new();
@@ -907,6 +933,18 @@ fn profile_snapshot(name: &str) -> Result<Profile, String> {
             files,
         });
     }
+    skills.sort_by(|a, b| a.category.cmp(&b.category).then_with(|| a.name.cmp(&b.name)));
+    Ok(Profile {
+        name: name.to_string(),
+        created_at: now_secs(),
+        skills,
+        servers,
+    })
+}
+
+fn profile_snapshot(name: &str) -> Result<Profile, String> {
+    let mut candidates = Vec::new();
+    collect_skills(skills_store(), "store", &mut candidates);
     let servers = read_servers()
         .into_iter()
         .map(|server| ProfileServer {
@@ -916,48 +954,161 @@ fn profile_snapshot(name: &str) -> Result<Profile, String> {
             env: server.env,
         })
         .collect();
-    Ok(Profile {
-        name: name.to_string(),
-        created_at: now_secs(),
-        skills,
-        servers,
-    })
+    snapshot_profile(name, candidates, servers)
 }
 
+/// The built-in profile is read from the Hermes install itself, so its file can
+/// be exported before anything has been copied into the Kilgharrah library.
+fn emrys_profile_snapshot() -> Result<Profile, String> {
+    let (candidates, _) = portable_hermes_candidates();
+    snapshot_profile("Emrys", candidates, hermes_servers())
+}
+
+/// The Hermes install split into the skills that run on macOS and Windows and
+/// the ones that do not. Emrys only ever carries the first group; the second
+/// is reported so the profile can say what it left out.
+fn portable_hermes_candidates() -> (Vec<(PathBuf, String, String)>, Vec<String>) {
+    let mut all = Vec::new();
+    collect_skills(hermes_root(), "hermes", &mut all);
+    let mut keep = Vec::new();
+    let mut skipped = Vec::new();
+    for (dir, category, source) in all {
+        let text = fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
+        let (display, _) = parse_frontmatter(&text);
+        let slug = dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let name = display
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| titleize(&slug));
+        if is_cross_platform(&frontmatter_platforms(&text)) {
+            keep.push((dir, category, source));
+        } else {
+            skipped.push(name);
+        }
+    }
+    skipped.sort_by_key(|value| value.to_lowercase());
+    (keep, skipped)
+}
+
+fn profile_destination(name: &str, path: Option<String>) -> PathBuf {
+    let stem = {
+        let value = slugify(name);
+        if value.is_empty() { "profile".to_string() } else { value }
+    };
+    match path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => {
+            let mut target = expand_path(&value);
+            if target.extension().and_then(|value| value.to_str()) != Some("json") {
+                target.set_extension("json");
+            }
+            target
+        }
+        None => profiles_dir().join(format!("{stem}.json")),
+    }
+}
+
+/// Write a profile as JSON. With no path it lands in the profiles folder; with
+/// a path it can go anywhere, so it can travel to another machine on a stick or
+/// a sync folder.
 #[tauri::command]
-fn export_profile(name: String) -> Result<String, String> {
+fn export_profile(name: String, path: Option<String>) -> Result<String, String> {
     ensure_store()?;
     let name = name.trim();
     if name.is_empty() {
         return Err("Give the profile a name.".into());
     }
-    let profile = profile_snapshot(name)?;
-    if profile.skills.is_empty() && profile.servers.is_empty() {
-        return Err("There are no installed skills or MCP servers to export yet.".into());
-    }
-    let dir = profiles_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("Could not create the profiles folder: {e}"))?;
-    let stem = {
-        let value = slugify(name);
-        if value.is_empty() { "profile".to_string() } else { value }
+    let profile = if name.eq_ignore_ascii_case("emrys") || name.eq_ignore_ascii_case("hermes") {
+        emrys_profile_snapshot()?
+    } else {
+        profile_snapshot(name)?
     };
-    let path = dir.join(format!("{stem}.json"));
+    if profile.skills.is_empty() && profile.servers.is_empty() {
+        return Err(
+            "That profile has no skills or MCP servers to export. Check the folder shown on the profile."
+                .into(),
+        );
+    }
+    let target = profile_destination(name, path);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Could not create the profiles folder: {e}"))?;
+    }
     let text = serde_json::to_string_pretty(&profile)
         .map_err(|e| format!("Could not encode the profile: {e}"))?;
-    fs::write(&path, format!("{text}\n")).map_err(|e| format!("Could not save the profile: {e}"))?;
-    Ok(path.display().to_string())
+    fs::write(&target, format!("{text}\n"))
+        .map_err(|e| format!("Could not save the profile: {e}"))?;
+    Ok(target.display().to_string())
+}
+
+/// Read a profile file from anywhere, keep a copy in the profiles folder, then
+/// install its skills and MCP servers. This is the one-step path for a clean
+/// machine: pick the exported file and the library is ready.
+#[tauri::command]
+fn import_profile(path: String) -> Result<AppState, String> {
+    ensure_store()?;
+    let source = expand_path(path.trim());
+    let text =
+        fs::read_to_string(&source).map_err(|e| format!("Could not open that profile: {e}"))?;
+    let profile: Profile = serde_json::from_str(&text)
+        .map_err(|e| format!("That file is not a Kilgharrah profile: {e}"))?;
+    if profile.name.trim().is_empty() {
+        return Err("That profile has no name.".into());
+    }
+    if profile.skills.is_empty() && profile.servers.is_empty() {
+        return Err("That profile is empty.".into());
+    }
+    let dir = profiles_dir();
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create the profiles folder: {e}"))?;
+    let stem = {
+        let value = slugify(&profile.name);
+        if value.is_empty() { "profile".to_string() } else { value }
+    };
+    let text = serde_json::to_string_pretty(&profile)
+        .map_err(|e| format!("Could not encode the profile: {e}"))?;
+    fs::write(dir.join(format!("{stem}.json")), format!("{text}\n"))
+        .map_err(|e| format!("Could not save the imported profile: {e}"))?;
+    install_profile(&profile)?;
+    mirror_mcp()?;
+    build_state()
+}
+
+fn profile_skill_names(candidates: &[(PathBuf, String, String)]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (dir, _, _) in candidates {
+        let text = fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
+        let (display, _) = parse_frontmatter(&text);
+        let slug = dir.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+        let name = display
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| titleize(slug));
+        if !names.iter().any(|existing| existing.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    names.sort_by_key(|value| value.to_lowercase());
+    names
 }
 
 fn list_profiles() -> Vec<ProfileInfo> {
-    let mut candidates = Vec::new();
-    collect_skills(hermes_root(), "hermes", &mut candidates);
+    let (candidates, excluded) = portable_hermes_candidates();
     let servers = hermes_servers();
+    let skill_names = profile_skill_names(&candidates);
     let mut out = vec![ProfileInfo {
-        name: "Hermes".into(),
+        name: "Emrys".into(),
         path: None,
         skills: candidates.len(),
         servers: servers.len(),
         server_names: servers.iter().map(|server| server.name.clone()).collect(),
+        skill_names,
+        excluded_names: excluded,
+        location: hermes_root().display().to_string(),
         builtin: true,
     }];
     if let Ok(entries) = fs::read_dir(profiles_dir()) {
@@ -982,6 +1133,9 @@ fn list_profiles() -> Vec<ProfileInfo> {
                     .iter()
                     .map(|server| server.name.clone())
                     .collect(),
+                skill_names: profile.skills.iter().map(|skill| skill.name.clone()).collect(),
+                excluded_names: Vec::new(),
+                location: path.display().to_string(),
                 builtin: false,
             });
         }
@@ -1067,10 +1221,9 @@ fn install_profile(profile: &Profile) -> Result<usize, String> {
     Ok(installed)
 }
 
-fn apply_hermes() -> Result<usize, String> {
+fn apply_emrys() -> Result<usize, String> {
     ensure_store()?;
-    let mut candidates = Vec::new();
-    collect_skills(hermes_root(), "hermes", &mut candidates);
+    let (candidates, _) = portable_hermes_candidates();
     let mut installed = 0usize;
     for (from, category, _) in candidates {
         let Some(slug) = from.file_name().and_then(|value| value.to_str()) else {
@@ -1095,7 +1248,7 @@ fn apply_hermes() -> Result<usize, String> {
                 version: None,
                 installed_at: now_secs(),
                 hash: hash_skill(&to),
-                profile: Some("Hermes".into()),
+                profile: Some("Emrys".into()),
             },
         )?;
         link_skill(slug, &to)?;
@@ -1104,14 +1257,14 @@ fn apply_hermes() -> Result<usize, String> {
     let servers = hermes_servers();
     merge_profile_servers(&servers)?;
     let mut settings = read_settings();
-    settings.profile = Some("Hermes".into());
+    settings.profile = Some("Emrys".into());
     write_settings(&settings)?;
     Ok(installed)
 }
 
 fn apply_profile_named(name: &str) -> Result<usize, String> {
-    if name.eq_ignore_ascii_case("hermes") {
-        return apply_hermes();
+    if name.eq_ignore_ascii_case("emrys") || name.eq_ignore_ascii_case("hermes") {
+        return apply_emrys();
     }
     let wanted = name.trim().to_string();
     let mut found: Option<Profile> = None;
@@ -1175,16 +1328,17 @@ fn remove_profile_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Remove an exported profile file. The built-in Hermes profile has no file to
-/// delete, so it is refused. Skills already copied into the library stay there.
+/// Remove an exported profile file. The built-in Emrys profile is derived from
+/// the Hermes install, so it has no file to delete and is refused. Skills already
+/// copied into the library stay there.
 #[tauri::command]
 fn delete_profile(name: String) -> Result<AppState, String> {
     let wanted = name.trim().to_string();
     if wanted.is_empty() {
         return Err("Pick a profile to delete.".into());
     }
-    if wanted.eq_ignore_ascii_case("hermes") {
-        return Err("The built-in Hermes profile cannot be deleted.".into());
+    if wanted.eq_ignore_ascii_case("emrys") || wanted.eq_ignore_ascii_case("hermes") {
+        return Err("The built-in Emrys profile cannot be deleted.".into());
     }
     remove_profile_file(&profiles_dir(), &wanted)?;
     let mut settings = read_settings();
@@ -1196,6 +1350,196 @@ fn delete_profile(name: String) -> Result<AppState, String> {
     if active {
         settings.profile = None;
         write_settings(&settings)?;
+    }
+    build_state()
+}
+
+// ------------------------------------------------------------------- scan
+
+/// A skill that exists on this machine but is not in the library yet.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredSkill {
+    id: String,
+    name: String,
+    slug: String,
+    description: String,
+    category: String,
+    source: String,
+    path: String,
+    files: usize,
+    platforms: Vec<String>,
+    portable: bool,
+    in_library: bool,
+}
+
+/// Folders another tool may already keep skills in, with the label to show.
+fn installed_skill_roots() -> Vec<(PathBuf, String)> {
+    let mut roots: Vec<(PathBuf, String)> = Vec::new();
+    let mut add = |path: PathBuf, source: &str| {
+        if path.is_dir() && !roots.iter().any(|(seen, _)| seen == &path) {
+            roots.push((path, source.to_string()));
+        }
+    };
+    add(agents_root().join("skills"), "Freebuff CLI");
+    add(home_dir().join(".claude").join("skills"), "Claude Code");
+    add(home_dir().join(".codex").join("skills"), "Codex CLI");
+    add(home_dir().join(".gemini").join("skills"), "Gemini CLI");
+    add(hermes_root(), "Hermes");
+    let settings = read_settings();
+    if let Some(root) = settings
+        .project_root
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let base = expand_path(root);
+        add(base.join(".agents").join("skills"), "Project");
+        add(base.join(".claude").join("skills"), "Project");
+    }
+    roots
+}
+
+/// Every skill already in the library, as slug and category.
+fn library_lookup() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let Ok(categories) = fs::read_dir(skills_store()) else {
+        return out;
+    };
+    for category in categories.flatten() {
+        let name = category.file_name().to_string_lossy().to_string();
+        let Ok(children) = fs::read_dir(category.path()) else {
+            continue;
+        };
+        for child in children.flatten() {
+            if child.path().join("SKILL.md").is_file() {
+                out.push((child.file_name().to_string_lossy().to_string(), name.clone()));
+            }
+        }
+    }
+    out
+}
+
+fn library_has(slug: &str) -> bool {
+    library_lookup().iter().any(|(known, _)| known == slug)
+}
+
+/// Look through the folders other tools keep skills in. A symlink is skipped:
+/// on macOS and Linux the mirrors point back into the library, so following
+/// them would report the library as newly found.
+#[tauri::command]
+fn scan_installed_skills() -> Result<Vec<DiscoveredSkill>, String> {
+    ensure_store()?;
+    let library = library_lookup();
+    let mut out: Vec<DiscoveredSkill> = Vec::new();
+    for (root, source) in installed_skill_roots() {
+        let mut candidates = Vec::new();
+        collect_skills(root, "scan", &mut candidates);
+        for (dir, category, _) in candidates {
+            if fs::symlink_metadata(&dir)
+                .map(|meta| meta.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let slug = dir
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if slug.is_empty() {
+                continue;
+            }
+            let text = fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
+            let (display, description) = parse_frontmatter(&text);
+            let platforms = frontmatter_platforms(&text);
+            let known = library.iter().find(|(existing, _)| existing == &slug);
+            out.push(DiscoveredSkill {
+                id: format!("{source}:{}", dir.display()),
+                name: display
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| titleize(&slug)),
+                slug,
+                description: description.unwrap_or_default(),
+                category: known
+                    .map(|(_, existing)| existing.clone())
+                    .unwrap_or(category),
+                source: source.clone(),
+                path: dir.display().to_string(),
+                files: count_files(&dir, 3),
+                portable: is_cross_platform(&platforms),
+                platforms,
+                in_library: known.is_some(),
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        a.in_library
+            .cmp(&b.in_library)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    out.dedup_by(|a, b| a.slug == b.slug && a.source == b.source);
+    Ok(out)
+}
+
+/// Copy scanned skills into the library, keeping their category folder when the
+/// store already has one by that name. Only folders the scan would have offered
+/// are accepted, so a crafted path cannot pull in arbitrary files.
+#[tauri::command]
+fn import_installed_skills(paths: Vec<String>) -> Result<AppState, String> {
+    ensure_store()?;
+    let roots: Vec<PathBuf> = installed_skill_roots()
+        .into_iter()
+        .map(|(root, _)| root)
+        .collect();
+    let mut imported = 0usize;
+    for raw in paths {
+        let dir = PathBuf::from(&raw);
+        if !roots.iter().any(|root| dir.starts_with(root)) {
+            continue;
+        }
+        let Some(slug) = dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(String::from)
+        else {
+            continue;
+        };
+        if !safe_segment(&slug) || !dir.join("SKILL.md").is_file() || library_has(&slug) {
+            continue;
+        }
+        let parent = dir
+            .parent()
+            .and_then(|value| value.file_name())
+            .and_then(|value| value.to_str())
+            .unwrap_or("other")
+            .to_string();
+        let category = if safe_segment(&parent) && skills_store().join(&parent).is_dir() {
+            parent
+        } else {
+            "other".to_string()
+        };
+        let to = skills_store().join(&category).join(&slug);
+        if to.exists() {
+            continue;
+        }
+        copy_dir(&dir, &to).map_err(|e| format!("Could not copy {slug}: {e}"))?;
+        write_meta(
+            &to,
+            &InstalledMeta {
+                name: titleize(&slug),
+                origin: "scan".into(),
+                upstream: Some(dir.display().to_string()),
+                version: None,
+                installed_at: now_secs(),
+                hash: hash_skill(&to),
+                profile: None,
+            },
+        )?;
+        link_skill(&slug, &to)?;
+        imported += 1;
+    }
+    if imported == 0 {
+        return Err("Nothing new to import: those skills are already in the library.".into());
     }
     build_state()
 }
@@ -1343,6 +1687,49 @@ fn parse_frontmatter(text: &str) -> (Option<String>, Option<String>) {
         }
     }
     (name, description)
+}
+
+/// The `platforms:` list a skill declares in its frontmatter, lowercased.
+/// Skills that declare none are treated as portable, which is true of the ones
+/// written for this repository.
+fn frontmatter_platforms(text: &str) -> Vec<String> {
+    let mut lines = text.lines();
+    if lines.next().map(|line| line.trim()) != Some("---") {
+        return Vec::new();
+    }
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        let Some(value) = trimmed.strip_prefix("platforms:") else {
+            continue;
+        };
+        return value
+            .trim()
+            .trim_matches(|c| c == '[' || c == ']')
+            .split(',')
+            .map(|part| {
+                part.trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_lowercase()
+            })
+            .filter(|part| !part.is_empty())
+            .collect();
+    }
+    Vec::new()
+}
+
+/// A profile that travels between two machines has to work on both, so a skill
+/// locked to a single platform is left out: an iMessage skill is no use on
+/// Windows, and a Linux-only one is no use here.
+fn is_cross_platform(platforms: &[String]) -> bool {
+    if platforms.is_empty() {
+        return true;
+    }
+    let has = |wanted: &str| platforms.iter().any(|entry| entry == wanted);
+    has("macos") && has("windows")
 }
 
 fn count_files(dir: &Path, depth: usize) -> usize {
@@ -3645,8 +4032,11 @@ fn main() {
             read_dragon,
             save_dragon,
             export_profile,
+            import_profile,
             apply_profile,
             delete_profile,
+            scan_installed_skills,
+            import_installed_skills,
             diagnostics,
             open_url,
             reveal_store
@@ -3658,6 +4048,115 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The commands read `KILGHARRAH_HOME` and `KILGHARRAH_HERMES`, so every
+    /// test that sets them holds this lock. Without it a parallel test can see
+    /// another test's temporary folders.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn seed_skill(dir: &Path, text: &str) {
+        fs::create_dir_all(dir).expect("skill folder is created");
+        fs::write(dir.join("SKILL.md"), text).expect("skill file is written");
+    }
+
+    #[test]
+    fn emrys_leaves_out_single_platform_skills() {
+        let macos = vec!["macos".to_string()];
+        let no_windows = vec!["linux".to_string(), "macos".to_string()];
+        let cross = vec![
+            "linux".to_string(),
+            "macos".to_string(),
+            "windows".to_string(),
+        ];
+        assert!(!is_cross_platform(&macos));
+        assert!(!is_cross_platform(&no_windows));
+        assert!(is_cross_platform(&cross));
+        let undeclared: Vec<String> = Vec::new();
+        assert!(is_cross_platform(&undeclared));
+    }
+
+    #[test]
+    fn frontmatter_platforms_reads_the_inline_list() {
+        let text = "---\nname: imessage\ndescription: x\nplatforms: [macos]\n---\n# iMessage\n";
+        assert_eq!(frontmatter_platforms(text), vec!["macos".to_string()]);
+        assert_eq!(frontmatter_platforms("# no frontmatter"), Vec::<String>::new());
+    }
+
+    /// Drives the same functions the Scan and Emrys commands call, against a
+    /// temporary home and Hermes install, so the portability filter, the scan
+    /// and the import are checked end to end without touching this machine.
+    #[test]
+    fn emrys_scan_and_import_round_trip() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let root = std::env::temp_dir().join(format!("kilgharrah-emrys-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let hermes = root.join("hermes");
+        seed_skill(
+            &hermes.join("development").join("alpha"),
+            "---\nname: Alpha\ndescription: Runs anywhere\n---\n\nBody\n",
+        );
+        seed_skill(
+            &hermes.join("apple").join("beta"),
+            "---\nname: Beta\ndescription: Apple only\nplatforms: [macos]\n---\n\nBody\n",
+        );
+        std::env::set_var("KILGHARRAH_HOME", &home);
+        std::env::set_var("KILGHARRAH_HERMES", &hermes);
+
+        let (kept, skipped) = portable_hermes_candidates();
+        assert_eq!(kept.len(), 1, "only the cross-platform skill is kept");
+        assert_eq!(skipped, vec!["Beta".to_string()]);
+
+        let installed = apply_emrys().expect("Emrys applies");
+        assert_eq!(installed, 1);
+        let store = home.join("kilgharrah").join("skills");
+        assert!(
+            store.join("development").join("alpha").join("SKILL.md").is_file(),
+            "an existing category folder is kept"
+        );
+        assert!(
+            !store.join("apple").exists(),
+            "the macOS-only skill never reaches the library"
+        );
+
+        let found = scan_installed_skills().expect("the scan runs");
+        let alpha = found
+            .iter()
+            .find(|skill| skill.slug == "alpha")
+            .expect("alpha is offered");
+        assert_eq!(alpha.source, "Hermes");
+        assert!(alpha.portable, "alpha declares no platforms");
+        assert!(alpha.in_library, "alpha was just applied from Emrys");
+        let beta = found
+            .iter()
+            .find(|skill| skill.slug == "beta")
+            .expect("beta is offered");
+        assert!(!beta.portable);
+        assert!(!beta.in_library);
+        assert_eq!(beta.platforms, vec!["macos".to_string()]);
+
+        // A folder the scan offers can be imported; anything else is refused.
+        seed_skill(
+            &hermes.join("productivity").join("gamma"),
+            "---\nname: Gamma\n---\n\nBody\n",
+        );
+        let outside = root.join("elsewhere").join("evil");
+        seed_skill(&outside, "---\nname: Evil\n---\n\nBody\n");
+        import_installed_skills(vec![
+            hermes.join("productivity").join("gamma").display().to_string(),
+            outside.display().to_string(),
+        ])
+        .expect("gamma imports");
+        assert!(store.join("productivity").join("gamma").join("SKILL.md").is_file());
+        assert!(
+            !store.join("evil").exists(),
+            "a path outside the scanned roots is refused"
+        );
+
+        std::env::remove_var("KILGHARRAH_HOME");
+        std::env::remove_var("KILGHARRAH_HERMES");
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn slugify_is_stable() {
@@ -3834,6 +4333,7 @@ mcp_servers:
         let skill = root.join("kilgharrah/skills/design/legacy");
         fs::create_dir_all(&skill).unwrap();
         fs::write(skill.join("SKILL.md"), "---\nname: Legacy\n---\n\nBody\n").unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         std::env::set_var("KILGHARRAH_HOME", &root);
 
         let state = build_state().unwrap();
@@ -3895,6 +4395,47 @@ mcp_servers:
         assert!(!link.exists(), "a copied folder is removed on disable");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profile_snapshot_keeps_files_and_servers() {
+        let root = std::env::temp_dir().join(format!("kilgharrah-profile-{}", std::process::id()));
+        let dir = root.join("creative/p5js");
+        fs::create_dir_all(dir.join("references")).unwrap();
+        fs::write(dir.join("SKILL.md"), "---\nname: p5js\n---\n\nBody\n").unwrap();
+        fs::write(dir.join("references/api.md"), "Reference\n").unwrap();
+
+        let profile = snapshot_profile(
+            "Hermes",
+            vec![(dir, "creative".to_string(), "hermes".to_string())],
+            vec![ProfileServer {
+                name: "rea".into(),
+                command: "/opt/rea".into(),
+                args: vec!["mcp".into()],
+                env: BTreeMap::new(),
+            }],
+        )
+        .expect("the snapshot builds");
+
+        assert_eq!(profile.skills.len(), 1);
+        assert_eq!(profile.skills[0].name, "p5js");
+        assert_eq!(profile.skills[0].files.len(), 2, "SKILL.md and its reference travel");
+        assert_eq!(profile.servers[0].name, "rea");
+        let json = serde_json::to_string(&profile).unwrap();
+        let back: Profile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.skills[0].slug, "p5js");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profile_export_path_keeps_json() {
+        let dir = std::env::temp_dir().join(format!("kilgharrah-export-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let given = profile_destination("Hermes", Some(dir.join("hermes").display().to_string()));
+        assert_eq!(given.extension().and_then(|value| value.to_str()), Some("json"));
+        let kept = profile_destination("Hermes", Some(dir.join("hermes.json").display().to_string()));
+        assert_eq!(kept.file_name().and_then(|value| value.to_str()), Some("hermes.json"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

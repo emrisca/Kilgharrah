@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
-import type { AppState, Diagnostics, SkillUpdate } from "../types";
+import type { AppState, Diagnostics, DiscoveredSkill, SkillUpdate } from "../types";
 import { Icon } from "./Icons";
 import { DragonEditor } from "./DragonEditor";
 import { BUNDLED_FRAMES, frameFits, splitFrames } from "../dragon";
@@ -10,7 +11,7 @@ import type { Palette } from "../App";
 import type { UpdateView } from "../updater";
 
 type Theme = "dark" | "light";
-type Panel = "general" | "profiles" | "agents" | "diagnostics" | "updates" | "credits";
+type Panel = "general" | "profiles" | "scan" | "agents" | "diagnostics" | "updates" | "credits";
 
 const PALETTES: { id: Palette; name: string; note: string }[] = [
   { id: "aurora", name: "Aurora", note: "Green" },
@@ -20,6 +21,13 @@ const PALETTES: { id: Palette; name: string; note: string }[] = [
   { id: "rose", name: "Rose", note: "Pink" },
   { id: "merlin", name: "Merlin", note: "Gold" }
 ];
+
+const profileFile = (name: string) =>
+  `${name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "profile"}.json`;
 
 type Props = {
   state: AppState;
@@ -66,9 +74,14 @@ export function SettingsView({
   const [dragonOpen, setDragonOpen] = useState(false);
   const [dragon, setDragon] = useState<{ count: number; bad: number } | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportingName, setExportingName] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
   const [applying, setApplying] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [scanned, setScanned] = useState<DiscoveredSkill[] | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [importingSkills, setImportingSkills] = useState(false);
 
   useEffect(() => {
     getVersion()
@@ -153,17 +166,64 @@ export function SettingsView({
   };
 
   const exportProfile = async () => {
-    if (!profileName.trim() || exporting) return;
+    const name = profileName.trim();
+    if (!name || exporting) return;
     setExporting(true);
     try {
-      const path = await api.exportProfile(profileName.trim());
-      notify(`Profile saved to ${path}`);
+      const path = await save({
+        title: "Export the current setup",
+        defaultPath: profileFile(name),
+        filters: [{ name: "Kilgharrah profile", extensions: ["json"] }]
+      });
+      if (typeof path !== "string") return;
+      const saved = await api.exportProfile(name, path);
+      notify(`Profile saved to ${saved}`);
       setProfileName("");
-      onState(await api.snapshot());
     } catch (reason) {
       onError(String(reason));
     } finally {
       setExporting(false);
+    }
+  };
+
+  const exportNamedProfile = async (name: string) => {
+    setExportingName(name);
+    try {
+      const path = await save({
+        title: `Export the ${name} profile`,
+        defaultPath: profileFile(name),
+        filters: [{ name: "Kilgharrah profile", extensions: ["json"] }]
+      });
+      if (typeof path !== "string") return;
+      const saved = await api.exportProfile(name, path);
+      notify(`${name} exported to ${saved}`);
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setExportingName(null);
+    }
+  };
+
+  const importProfile = async () => {
+    setImporting(true);
+    try {
+      const picked = await openDialog({
+        multiple: false,
+        title: "Import a Kilgharrah profile",
+        filters: [{ name: "Kilgharrah profile", extensions: ["json"] }]
+      });
+      if (typeof picked !== "string") return;
+      const next = await api.importProfile(picked);
+      onState(next);
+      notify(
+        next.setup.profile
+          ? `${next.setup.profile} imported and applied`
+          : "Profile imported"
+      );
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -192,6 +252,31 @@ export function SettingsView({
     }
   };
 
+  const runScan = async () => {
+    setScanning(true);
+    try {
+      setScanned(await api.scanInstalledSkills());
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const importFound = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    setImportingSkills(true);
+    try {
+      onState(await api.importInstalledSkills(paths));
+      notify(`${paths.length} skill${paths.length === 1 ? "" : "s"} imported`);
+      setScanned(await api.scanInstalledSkills());
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setImportingSkills(false);
+    }
+  };
+
   const saveTargets = async () => {
     setSavingTargets(true);
     try {
@@ -216,6 +301,7 @@ export function SettingsView({
   const pendingUpdates = (skillUpdates ?? []).filter((row) => row.status === "available");
   const updateErrors = (skillUpdates ?? []).filter((row) => row.status === "error");
   const unknownUpdates = (skillUpdates ?? []).filter((row) => row.status === "unknown");
+  const missing = (scanned ?? []).filter((row) => !row.inLibrary);
 
   const open = (url: string) => api.openUrl(url).catch((reason) => onError(String(reason)));
 
@@ -239,6 +325,9 @@ export function SettingsView({
           </button>
           <button data-active={panel === "profiles"} onClick={() => setPanel("profiles")}>
             Profiles
+          </button>
+          <button data-active={panel === "scan"} onClick={() => setPanel("scan")}>
+            Scan
           </button>
           <button data-active={panel === "agents"} onClick={() => setPanel("agents")}>
             Agents
@@ -378,8 +467,51 @@ export function SettingsView({
                         server{entry.servers === 1 ? "" : "s"}
                         {entry.builtin ? " · built in" : ""}
                       </span>
+                      <span className="sheet-note mono" title={entry.location}>
+                        {entry.location}
+                      </span>
+                      {entry.skillNames.length > 0 ? (
+                        <span className="profile-skills">
+                          {entry.skillNames.slice(0, 12).map((name) => (
+                            <span className="chip" key={name}>
+                              {name}
+                            </span>
+                          ))}
+                          {entry.skillNames.length > 12 && (
+                            <span className="chip">+{entry.skillNames.length - 12} more</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="sheet-note">
+                          {entry.builtin
+                            ? "No cross-platform Hermes skills found. Set HERMES_HOME, or install skills into that folder."
+                            : "No skills inside this profile file."}
+                        </span>
+                      )}
+                      {entry.excludedNames.length > 0 && (
+                        <span className="sheet-note">
+                          Left out, not cross platform: {entry.excludedNames.join(", ")}
+                        </span>
+                      )}
+                      {entry.serverNames.length > 0 && (
+                        <span className="profile-skills">
+                          {entry.serverNames.map((name) => (
+                            <span className="chip accent" key={name}>
+                              {name}
+                            </span>
+                          ))}
+                        </span>
+                      )}
                     </div>
                     <span className="spacer" />
+                    <button
+                      className="ghost-btn"
+                      disabled={exportingName !== null || applying !== null}
+                      onClick={() => void exportNamedProfile(entry.name)}
+                      title={`Export ${entry.name} to a JSON file`}
+                    >
+                      {exportingName === entry.name ? Icon.Spinner : Icon.Download} Export
+                    </button>
                     {active ? (
                       <span className="chip accent">Active</span>
                     ) : (
@@ -429,8 +561,8 @@ export function SettingsView({
             <div className="panel-head">
               <h3>Export the current setup</h3>
               <p>
-                Saves the installed skills and MCP servers as a JSON profile in the profiles
-                folder. Use it on another machine, or keep it as a backup.
+                Saves the installed skills and MCP servers as one JSON file. Choose where it goes,
+                then carry it to the other machine.
               </p>
             </div>
             <div className="import-row">
@@ -448,6 +580,103 @@ export function SettingsView({
                 {exporting ? Icon.Spinner : Icon.Download} Export
               </button>
             </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Set up another machine</h3>
+              <p>
+                On the new machine, import the exported file. Its skills land in the library and
+                its MCP servers merge into the config in one step.
+              </p>
+            </div>
+            <div className="filters">
+              <button
+                className="primary compact"
+                disabled={importing}
+                onClick={() => void importProfile()}
+              >
+                {importing ? Icon.Spinner : Icon.Download} Import and apply a profile
+              </button>
+              <span className="sheet-note">
+                Existing skills are kept as they are. Servers with the same name are not replaced.
+              </span>
+            </div>
+          </section>
+        </>
+      ) : panel === "scan" ? (
+        <>
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Skills already on this machine</h3>
+              <p>
+                Kilgharrah looks in the folders other tools keep skills in — the CLI mirrors,
+                Claude, Codex, Gemini and a Hermes install — and lists what is not in your library
+                yet. Mirrors that point back into the library are skipped.
+              </p>
+            </div>
+            <div className="filters">
+              <button className="ghost-btn" disabled={scanning} onClick={() => void runScan()}>
+                {Icon.Refresh} {scanning ? "Scanning" : "Scan for installed skills"}
+              </button>
+              {scanned !== null && (
+                <span className="chip">{missing.length} not in the library</span>
+              )}
+              <span className="spacer" />
+              <button
+                className="primary compact"
+                disabled={importingSkills || missing.length === 0}
+                onClick={() => void importFound(missing.map((row) => row.path))}
+              >
+                {importingSkills ? Icon.Spinner : Icon.Download} Import all
+              </button>
+            </div>
+            {scanned === null ? (
+              <p className="sheet-note">Run a scan to see what other tools already have.</p>
+            ) : scanned.length === 0 ? (
+              <p className="sheet-note">
+                No skills found in the places Kilgharrah checks. Install one, or set
+                KILGHARRAH_HERMES for a Hermes folder somewhere else.
+              </p>
+            ) : (
+              <div className="diag-list">
+                {scanned.map((row) => (
+                  <div className="diag-row" key={row.id}>
+                    <span
+                      className={`diag-dot ${
+                        row.inLibrary ? "ok" : row.portable ? "warn" : "error"
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <div className="target-copy">
+                      <strong>{row.name}</strong>
+                      <span className="sheet-note">
+                        {row.source} · {row.files} file{row.files === 1 ? "" : "s"}
+                      </span>
+                      <span className="sheet-note mono" title={row.path}>
+                        {row.path}
+                      </span>
+                      <span className="profile-skills">
+                        {row.inLibrary && <span className="chip">in library</span>}
+                        {!row.portable && row.platforms.length > 0 && (
+                          <span className="chip accent">{row.platforms.join(" / ")} only</span>
+                        )}
+                      </span>
+                    </div>
+                    <span className="spacer" />
+                    {!row.inLibrary && (
+                      <button
+                        className="ghost-btn"
+                        disabled={importingSkills}
+                        onClick={() => void importFound([row.path])}
+                      >
+                        {Icon.Download} Import
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
         </>
       ) : panel === "agents" ? (
