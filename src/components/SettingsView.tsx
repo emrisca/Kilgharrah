@@ -82,6 +82,7 @@ export function SettingsView({
   const [scanned, setScanned] = useState<DiscoveredSkill[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [importingSkills, setImportingSkills] = useState(false);
+  const [scanSource, setScanSource] = useState<string | null>(null);
 
   useEffect(() => {
     getVersion()
@@ -302,6 +303,11 @@ export function SettingsView({
   const updateErrors = (skillUpdates ?? []).filter((row) => row.status === "error");
   const unknownUpdates = (skillUpdates ?? []).filter((row) => row.status === "unknown");
   const missing = (scanned ?? []).filter((row) => !row.inLibrary);
+  const scanSources = Array.from(new Set((scanned ?? []).map((row) => row.source))).sort();
+  // A source can disappear between scans, so fall back to showing everything.
+  const activeSource = scanSource && scanSources.includes(scanSource) ? scanSource : null;
+  const visibleScan = (scanned ?? []).filter((row) => !activeSource || row.source === activeSource);
+  const visibleMissing = visibleScan.filter((row) => !row.inLibrary);
 
   const open = (url: string) => api.openUrl(url).catch((reason) => onError(String(reason)));
 
@@ -625,12 +631,42 @@ export function SettingsView({
               <span className="spacer" />
               <button
                 className="primary compact"
-                disabled={importingSkills || missing.length === 0}
-                onClick={() => void importFound(missing.map((row) => row.path))}
+                disabled={importingSkills || visibleMissing.length === 0}
+                onClick={() => void importFound(visibleMissing.map((row) => row.path))}
               >
-                {importingSkills ? Icon.Spinner : Icon.Download} Import all
+                {importingSkills ? Icon.Spinner : Icon.Download}{" "}
+                {activeSource ? "Import all shown" : "Import all"}
               </button>
             </div>
+            {scanSources.length > 1 && (
+              <div className="chips-row" role="tablist" aria-label="Where the skill came from">
+                <button
+                  role="tab"
+                  aria-selected={activeSource === null}
+                  className="pill"
+                  data-active={activeSource === null}
+                  onClick={() => setScanSource(null)}
+                >
+                  All
+                  <span className="pill-count">{scanned?.length ?? 0}</span>
+                </button>
+                {scanSources.map((source) => (
+                  <button
+                    key={source}
+                    role="tab"
+                    aria-selected={activeSource === source}
+                    className="pill"
+                    data-active={activeSource === source}
+                    onClick={() => setScanSource(source)}
+                  >
+                    {source}
+                    <span className="pill-count">
+                      {(scanned ?? []).filter((row) => row.source === source).length}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             {scanned === null ? (
               <p className="sheet-note">Run a scan to see what other tools already have.</p>
             ) : scanned.length === 0 ? (
@@ -640,7 +676,7 @@ export function SettingsView({
               </p>
             ) : (
               <div className="diag-list">
-                {scanned.map((row) => (
+                {visibleScan.map((row) => (
                   <div className="diag-row" key={row.id}>
                     <span
                       className={`diag-dot ${
