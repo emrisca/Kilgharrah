@@ -171,6 +171,14 @@ export function SetupOverlay({ state, onState, onClose, onError }: Props) {
                         {entry.skills} skill{entry.skills === 1 ? "" : "s"} and {entry.servers} MCP
                         server{entry.servers === 1 ? "" : "s"}
                       </span>
+                      {entry.skillNames.length > 0 && (
+                        <span className="sheet-note">
+                          {entry.skillNames.slice(0, 8).join(", ")}
+                          {entry.skillNames.length > 8
+                            ? ` and ${entry.skillNames.length - 8} more`
+                            : ""}
+                        </span>
+                      )}
                       {entry.serverNames.length > 0 && (
                         <span className="sheet-note mono">{entry.serverNames.join(", ")}</span>
                       )}

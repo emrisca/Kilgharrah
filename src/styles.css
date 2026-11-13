@@ -2084,6 +2084,13 @@ select.pill {
   flex: 1;
 }
 
+.profile-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
 .chips-row {
   display: flex;
   flex-wrap: wrap;
