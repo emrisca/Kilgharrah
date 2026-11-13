@@ -11,3 +11,15 @@ src-tauri/gen/schemas/
 __pycache__/
 
 .secrets/
+
+# Local notes and files this machine keeps
+MAC-VERIFY.md
+WINDOWS-*.md
+
+# Syncthing temporary files and folder marker
+.stfolder/
+~syncthing~*.tmp
+*.sync-conflict-*
+
+# Skills the app installs into this project
+.agents/
